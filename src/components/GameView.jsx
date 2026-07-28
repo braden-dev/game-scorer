@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { evaluate } from '../games/index.js'
 import { uid } from '../lib/util.js'
+import { useWakeLock } from '../lib/useWakeLock.js'
 import Modal from './Modal.jsx'
 import Scoreboard from './Scoreboard.jsx'
 import RoundSheet from './RoundSheet.jsx'
@@ -12,6 +13,10 @@ export default function GameView({ game, roster, onUpdate, onBack, onRematch, on
   const [sheet, setSheet] = useState(null) // { roundIndex, existing }
   const [panel, setPanel] = useState(null) // 'rules' | 'settings' | 'players'
   const [newName, setNewName] = useState('')
+
+  // Keep the screen awake while a game is in play — a scorekeeper that dims
+  // every 30 seconds is useless on a table.
+  useWakeLock(!status.finished)
 
   const maxRounds = def.maxRounds(game.settings)
   const roundsLeft = maxRounds ? maxRounds - game.rounds.length : null

@@ -36,7 +36,7 @@ function GameCard({ game, onOpen, onDelete }) {
   )
 }
 
-export default function Home({ games, onNew, onOpen, onDelete }) {
+export default function Home({ games, onNew, onOpen, onDelete, onOpenData, installBanner }) {
   const sorted = [...games].sort((a, b) => b.updatedAt - a.updatedAt)
   const active = sorted.filter((g) => !g.finishedAt)
   const done = sorted.filter((g) => g.finishedAt)
@@ -44,9 +44,14 @@ export default function Home({ games, onNew, onOpen, onDelete }) {
   return (
     <div className="home">
       <header className="hero">
-        <h1>Game Scorer</h1>
+        <div className="hero-row">
+          <h1>Game Scorer</h1>
+          <button type="button" className="icon-btn" onClick={onOpenData} aria-label="Data and backup">⋯</button>
+        </div>
         <p>Keep score for the games you actually play. Everything saves to this device.</p>
       </header>
+
+      {installBanner}
 
       <section>
         <h2 className="section-title">Start a game</h2>

@@ -2,13 +2,18 @@ import { useEffect, useState } from 'react'
 import { loadState, saveState } from './lib/storage.js'
 import { uid } from './lib/util.js'
 import { getGameDef, evaluate } from './games/index.js'
+import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
 import GameView from './components/GameView.jsx'
+import DataPanel from './components/DataPanel.jsx'
+import InstallBanner from './components/InstallBanner.jsx'
 
 export default function App() {
   const [state, setState] = useState(loadState)
   const [newGameId, setNewGameId] = useState(null)
+  const [showData, setShowData] = useState(false)
+  const install = useInstallPrompt()
 
   useEffect(() => { saveState(state) }, [state])
 
@@ -97,11 +102,23 @@ export default function App() {
   }
 
   return (
-    <Home
-      games={state.games}
-      onNew={setNewGameId}
-      onOpen={(id) => setState((prev) => ({ ...prev, activeGameId: id }))}
-      onDelete={deleteGame}
-    />
+    <>
+      <Home
+        games={state.games}
+        onNew={setNewGameId}
+        onOpen={(id) => setState((prev) => ({ ...prev, activeGameId: id }))}
+        onDelete={deleteGame}
+        onOpenData={() => setShowData(true)}
+        installBanner={<InstallBanner install={install} />}
+      />
+      {showData && (
+        <DataPanel
+          state={state}
+          install={install}
+          onImport={setState}
+          onClose={() => setShowData(false)}
+        />
+      )}
+    </>
   )
 }

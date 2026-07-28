@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="orange" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#fdba74"/>
+      <stop offset="0.45" stop-color="#f97316"/>
+      <stop offset="1" stop-color="#ea580c"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#1e2b45"/>
+      <stop offset="1" stop-color="#0b0f16"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="url(#glow)"/>
+
+  <!-- small die, behind and to the lower right -->
+  <g transform="translate(300 296) rotate(14)">
+    <rect x="0" y="0" width="132" height="132" rx="30" fill="url(#violet)"/>
+    <circle cx="66" cy="66" r="15" fill="#1e1b3a"/>
+    <circle cx="33" cy="33" r="15" fill="#1e1b3a"/>
+    <circle cx="99" cy="99" r="15" fill="#1e1b3a"/>
+  </g>
+
+  <!-- main die -->
+  <g transform="translate(78 96) rotate(-8)">
+    <rect x="0" y="0" width="236" height="236" rx="52" fill="url(#orange)"/>
+    <g fill="#3d1a06">
+      <circle cx="66" cy="66" r="23"/>
+      <circle cx="170" cy="66" r="23"/>
+      <circle cx="118" cy="118" r="23"/>
+      <circle cx="66" cy="170" r="23"/>
+      <circle cx="170" cy="170" r="23"/>
+    </g>
+  </g>
+</svg>

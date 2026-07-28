@@ -1,7 +1,8 @@
 # Game Scorer
 
 A local-first score keeper for **Farkle**, **Dutch Blitz**, and **3-13**. No accounts, no
-backend — every game is saved to your browser's localStorage and survives refreshes.
+backend — every game is saved to your browser's localStorage and survives refreshes. It's an
+installable PWA, so it runs offline from your phone's home screen.
 
 ## Running it
 
@@ -10,16 +11,52 @@ npm install
 npm run dev
 ```
 
-Then open http://localhost:5173.
+Then open http://localhost:5173. Note that the service worker is only generated for real
+builds — use `npm run build && npm run preview` to exercise offline behaviour.
 
-To build a static copy you can host anywhere (or just open from disk):
+## Installing on your phone
+
+The app deploys to GitHub Pages on every push to `main` (see
+`.github/workflows/deploy.yml`). Once it's live:
+
+- **iPhone** — open the URL in Safari, tap Share, then **Add to Home Screen**.
+- **Android** — open the URL in Chrome, then **Install app** from the menu (the app also
+  offers an install button when the browser supports it).
+
+Installing matters for more than convenience: iOS clears script-writable storage for sites
+you haven't opened in 7 days, but exempts web apps launched from the home screen. Installed,
+your score history sticks around.
+
+The app keeps the screen awake while a game is in progress, and works with no network at all
+after the first load.
+
+## Backups
+
+Scores live in browser storage, which is not a backup. The **⋯ → Data & backup** menu on the
+home screen exports everything to a JSON file (via the share sheet on phones, a download on
+desktop) and imports it back.
+
+Import **merges** — it adds games the device doesn't already have and never overwrites or
+deletes what's there — so it's also how you move history between your phone and laptop.
+
+## Building
 
 ```bash
 npm run build
 ```
 
-The output lands in `dist/` and uses relative asset paths, so it works from a file server,
-GitHub Pages, or a folder on a tablet.
+Output lands in `dist/`. For a subpath deploy like GitHub Pages project sites, set the base:
+
+```bash
+BUILD_BASE=/GameScorer/ npm run build
+```
+
+App icons are generated from `assets/icon.svg` and `assets/icon-maskable.svg`. After editing
+either, regenerate the PNGs:
+
+```bash
+npm run icons
+```
 
 ## What it does
 
@@ -61,7 +98,11 @@ GitHub Pages, or a folder on a tablet.
 ```
 src/
   App.jsx                 top-level state, routing, persistence
-  lib/storage.js          localStorage read/write
+  lib/
+    storage.js            localStorage read/write
+    backup.js             export / import / merge
+    useWakeLock.js        keeps the screen on during a game
+    useInstallPrompt.js   PWA install detection
   games/
     index.js              registry + evaluate() (totals, standings, win check)
     farkle.jsx            Farkle definition, entry UI, rules
