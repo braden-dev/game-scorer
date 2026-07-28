@@ -21,8 +21,12 @@ export default defineConfig({
         theme_color: '#0b0f16',
         background_color: '#0b0f16',
         display: 'standalone',
-        start_url: '.',
-        scope: '.',
+        // Absolute, not '.' — iOS resolves a relative start_url against the
+        // manifest's own location, which silently sends the installed app to
+        // the wrong path. Safari also opens links in the browser rather than
+        // the app when scope is left unset.
+        start_url: base,
+        scope: base,
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },

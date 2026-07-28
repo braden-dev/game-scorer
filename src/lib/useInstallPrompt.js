@@ -8,7 +8,12 @@ export function isStandalone() {
 }
 
 export function isIos() {
-  return /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+  const ua = window.navigator.userAgent
+  // iPadOS 13+ claims to be a Mac; the touch points give it away.
+  return (
+    /iphone|ipad|ipod/i.test(ua) ||
+    (/Macintosh/.test(ua) && window.navigator.maxTouchPoints > 1)
+  )
 }
 
 /**
