@@ -10,6 +10,25 @@ export function getGameDef(id) {
   return GAMES_BY_ID[id]
 }
 
+/**
+ * A game stores the settings it was created with, so one started before a new
+ * house rule shipped is missing that key entirely — which reads as `undefined`
+ * in the UI and silently scores as 0. Backfill defaults for anything absent,
+ * keeping whatever the game already set.
+ *
+ * Runs on load and on import, so it also covers backups from older versions.
+ */
+export function migrateState(state) {
+  return {
+    ...state,
+    games: state.games.map((game) => {
+      const def = GAMES_BY_ID[game.gameId]
+      if (!def) return game
+      return { ...game, settings: { ...def.defaultSettings, ...game.settings } }
+    }),
+  }
+}
+
 /** Totals + standings + finished state for a saved game. */
 export function evaluate(game) {
   const def = getGameDef(game.gameId)

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { loadState, saveState } from './lib/storage.js'
 import { uid } from './lib/util.js'
-import { getGameDef, evaluate } from './games/index.js'
+import { getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
@@ -10,14 +10,19 @@ import DataPanel from './components/DataPanel.jsx'
 import InstallBanner from './components/InstallBanner.jsx'
 
 export default function App() {
-  const [state, setState] = useState(loadState)
+  const [state, setState] = useState(() => migrateState(loadState()))
   const [newGameId, setNewGameId] = useState(null)
   const [showData, setShowData] = useState(false)
   const install = useInstallPrompt()
 
   useEffect(() => { saveState(state) }, [state])
 
-  const activeGame = state.games.find((g) => g.id === state.activeGameId) || null
+  // A record for a game this build doesn't know about would crash every screen
+  // that scores it. That happens for real: an installed PWA can be running a
+  // cached older build when a backup from a newer one is imported. Hide those
+  // rather than render them — they stay in storage and reappear after an update.
+  const playableGames = state.games.filter((g) => getGameDef(g.gameId))
+  const activeGame = playableGames.find((g) => g.id === state.activeGameId) || null
 
   const addToRoster = (name) => {
     const person = { id: uid('p'), name }
@@ -104,7 +109,7 @@ export default function App() {
   return (
     <>
       <Home
-        games={state.games}
+        games={playableGames}
         onNew={setNewGameId}
         onOpen={(id) => setState((prev) => ({ ...prev, activeGameId: id }))}
         onDelete={deleteGame}
@@ -115,7 +120,7 @@ export default function App() {
         <DataPanel
           state={state}
           install={install}
-          onImport={setState}
+          onImport={(imported) => setState(migrateState(imported))}
           onClose={() => setShowData(false)}
         />
       )}

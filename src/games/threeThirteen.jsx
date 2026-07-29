@@ -253,7 +253,7 @@ export default {
   blankEntry: () => ({ points: '', out: false, first: false }),
   entryScore: scoreEntry,
   entrySummary: (entry, settings) => {
-    if (entry.first) return `🥇 ${settings.firstOutBonus}`
+    if (entry.first) return `🥇 ${settings.firstOutBonus ?? 0}`
     if (entry.out) return '✓ out'
     return String(num(entry.points))
   },
