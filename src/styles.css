@@ -490,6 +490,16 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .round-entry-total { font-size: 13px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .round-entry-total small { font-size: 11px; }
 
+.round-warning {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, #fbbf24 12%, transparent);
+  border: 1px solid color-mix(in srgb, #fbbf24 30%, transparent);
+  color: #fbbf24;
+  font-size: 12.5px;
+}
+
 .entry-fields { display: grid; gap: 8px; }
 .entry-main { display: flex; gap: 8px; align-items: flex-end; }
 .entry-main.wrap { flex-wrap: wrap; }

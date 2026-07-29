@@ -13,8 +13,16 @@ export default function RoundSheet({ game, def, roundIndex, existing, totals, on
     return seed
   })
 
-  const setEntry = (playerId, entry) => setEntries((prev) => ({ ...prev, [playerId]: entry }))
+  // Some games have rules that span the whole round — 3-13 allows only one
+  // player to go out first — so the game gets a chance to reconcile the others.
+  const setEntry = (playerId, entry) =>
+    setEntries((prev) => {
+      const next = { ...prev, [playerId]: entry }
+      return def.normalizeEntries ? def.normalizeEntries(next, playerId, game.players) : next
+    })
+
   const isEdit = Boolean(existing)
+  const warning = def.roundWarning?.(entries, game.players, game.settings)
 
   return (
     <Modal
@@ -59,6 +67,7 @@ export default function RoundSheet({ game, def, roundIndex, existing, totals, on
           </div>
         ))}
       </div>
+      {warning && <p className="round-warning">{warning}</p>}
     </Modal>
   )
 }

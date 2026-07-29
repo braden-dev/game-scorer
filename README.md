@@ -88,9 +88,16 @@ npm run icons
 
 ### 3-13
 - 11 rounds; round *n* deals *n + 2* cards and the matching rank is wild (3s through Kings).
-- Enter leftover-card penalties directly, tap **Went out** for a clean 0, or use the
-  **card counter** to tap the cards still in a hand.
-- Configurable: 10/J/Q/K as 10 each or by rank, ace as 1 or 15, and optional jokers at 20.
+- Enter leftover-card penalties directly, or use the **card counter** to tap the cards still
+  in a hand.
+- **🥇 Out first** marks the player who ended the round — they score −5 by default. Only one
+  player can hold it, so claiming it for someone else demotes the previous holder rather than
+  handing out two bonuses.
+- **✓ Also out** is for anyone who cleared their hand on that final turn: 0 for the round.
+- A wild card left in your hand scores its own rank (a 3 counts 3), same as any other card —
+  it isn't worth anything special.
+- Configurable: the first-out bonus, 10/J/Q/K as 10 each or by rank, ace as 1 or 15, and
+  optional jokers at 20.
 - Lowest total after the last round wins.
 
 ## Layout

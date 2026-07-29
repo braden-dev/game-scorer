@@ -83,35 +83,71 @@ function HandCalculator({ settings, onUse, onClose }) {
   )
 }
 
+/**
+ * Going out first earns the bonus; anyone else who empties their hand on the
+ * final turn simply avoids penalties. Entries saved before the bonus existed
+ * have no `first` flag, so they keep scoring 0 exactly as they did.
+ */
+function scoreEntry(entry, settings) {
+  if (entry.first) return settings.firstOutBonus ?? 0
+  if (entry.out) return 0
+  return num(entry.points)
+}
+
 function EntryFields({ entry, setEntry, settings }) {
   const [showCalc, setShowCalc] = useState(false)
+  const bonus = settings.firstOutBonus
+  const alsoOut = entry.out && !entry.first
+
   return (
     <div className="entry-fields">
-      <div className="entry-main">
+      <div className="entry-main wrap">
         <NumberField
           value={entry.out ? '0' : entry.points}
-          onChange={(v) => setEntry({ ...entry, points: v, out: false })}
+          onChange={(v) => setEntry({ ...entry, points: v, out: false, first: false })}
           placeholder="0"
           suffix="pts"
         />
         <button
           type="button"
-          className={`chip${entry.out ? ' active' : ''}`}
-          onClick={() => setEntry(entry.out ? { ...entry, out: false } : { ...entry, out: true, points: '0' })}
-          title="Went out — no cards left"
+          className={`chip${entry.first ? ' active' : ''}`}
+          onClick={() =>
+            setEntry(entry.first
+              ? { ...entry, first: false, out: false }
+              : { ...entry, first: true, out: true, points: '0' })
+          }
+          title="Ended the round by going out first"
         >
-          ✓ Went out
+          🥇 Out first
+        </button>
+        <button
+          type="button"
+          className={`chip${alsoOut ? ' active' : ''}`}
+          onClick={() =>
+            setEntry(alsoOut
+              ? { ...entry, out: false, first: false }
+              : { ...entry, out: true, first: false, points: '0' })
+          }
+          title="Laid down every card on their last turn"
+        >
+          ✓ Also out
         </button>
         <button type="button" className="chip" onClick={() => setShowCalc((s) => !s)}>
           {showCalc ? 'Hide cards' : 'Count cards'}
         </button>
       </div>
+      {entry.first && (
+        <p className={`entry-note${bonus < 0 ? ' good' : ''}`}>
+          Went out first — scores {bonus} this round
+        </p>
+      )}
+      {alsoOut && <p className="entry-note">Cleared their hand — scores 0 this round</p>}
       {showCalc && (
         <HandCalculator
           settings={settings}
           onClose={() => setShowCalc(false)}
           onUse={(points) => {
-            setEntry({ ...entry, points: String(points), out: points === 0 ? entry.out : false })
+            setEntry({ ...entry, points: String(points), out: false, first: false })
             setShowCalc(false)
           }}
         />
@@ -143,7 +179,10 @@ function Rules({ settings }) {
         <li>10, J, Q, K: {settings.faceValue === 'rank' ? '10, 11, 12, 13' : '10 each'}</li>
         {settings.jokerValue > 0 && <li>Joker: {settings.jokerValue}</li>}
       </ul>
-      <p>Whoever goes out first scores 0 for that round.</p>
+      <p>
+        The first player to go out scores <strong>{settings.firstOutBonus}</strong> for the round. Anyone else
+        who manages to lay down their whole hand on that last turn scores 0.
+      </p>
       <h4>Winning</h4>
       <p>After all {settings.rounds} rounds, the <strong>lowest</strong> total wins.</p>
     </div>
@@ -170,9 +209,19 @@ export default {
     faceValue: 'ten',
     aceValue: 1,
     jokerValue: 0,
+    firstOutBonus: -5,
   },
   settingsFields: [
     { key: 'rounds', label: 'Number of rounds', type: 'number', min: 1, max: 11 },
+    {
+      key: 'firstOutBonus',
+      label: 'First player out scores',
+      type: 'number',
+      min: -50,
+      max: 0,
+      step: 5,
+      help: 'A negative number subtracts from their total. Set to 0 if going out first earns no bonus.',
+    },
     {
       key: 'faceValue',
       label: '10, J, Q, K value',
@@ -201,26 +250,56 @@ export default {
       ],
     },
   ],
-  blankEntry: () => ({ points: '', out: false }),
-  entryScore: (entry) => (entry.out ? 0 : num(entry.points)),
-  entrySummary: (entry) => (entry.out ? '✓ out' : String(num(entry.points))),
+  blankEntry: () => ({ points: '', out: false, first: false }),
+  entryScore: scoreEntry,
+  entrySummary: (entry, settings) => {
+    if (entry.first) return `🥇 ${settings.firstOutBonus}`
+    if (entry.out) return '✓ out'
+    return String(num(entry.points))
+  },
   EntryFields,
   Rules,
 
+  /**
+   * Only one player can go out first — marking someone clears whoever held it
+   * before, so the round can't quietly hand out two bonuses.
+   */
+  normalizeEntries(entries, changedId) {
+    if (!entries[changedId]?.first) return entries
+    const next = {}
+    for (const [id, entry] of Object.entries(entries)) {
+      next[id] = id !== changedId && entry.first ? { ...entry, first: false, out: true } : entry
+    }
+    return next
+  },
+
+  roundWarning(entries, players) {
+    const anyOut = players.some((p) => entries[p.id]?.out)
+    const anyFirst = players.some((p) => entries[p.id]?.first)
+    if (anyOut && !anyFirst) {
+      return 'Nobody is marked as going out first, so no one gets the bonus this round.'
+    }
+    return null
+  },
+
   computeTotals(game) {
     const totals = {}
-    for (const p of game.players) totals[p.id] = { total: 0, outs: 0 }
+    for (const p of game.players) totals[p.id] = { total: 0, outs: 0, firsts: 0 }
     for (const round of game.rounds) {
       for (const p of game.players) {
         const entry = round.entries[p.id]
         if (!entry) continue
-        totals[p.id].total += entry.out ? 0 : num(entry.points)
+        totals[p.id].total += scoreEntry(entry, game.settings)
         if (entry.out) totals[p.id].outs += 1
+        if (entry.first) totals[p.id].firsts += 1
       }
     }
     for (const p of game.players) {
-      const o = totals[p.id].outs
-      totals[p.id].note = o ? `out ${o}×` : null
+      const t = totals[p.id]
+      const bits = []
+      if (t.firsts) bits.push(`out first ${t.firsts}×`)
+      else if (t.outs) bits.push(`out ${t.outs}×`)
+      t.note = bits.length ? bits.join(' · ') : null
     }
     return totals
   },
