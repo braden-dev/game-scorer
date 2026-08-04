@@ -22,3 +22,18 @@ test('README documents cloud-first configuration, migration checks, and frontend
   assert.match(readme, /db push/)
   assert.match(readme, /service-role|database password/i)
 })
+
+test('DataPanel explains Supabase Free-plan availability and backup limits', async () => {
+  const panel = await readFile(new URL('../src/components/DataPanel.jsx', import.meta.url), 'utf8')
+
+  assert.match(panel, /Free projects may pause/i)
+  assert.match(panel, /automatic downloadable database backups/i)
+  assert.match(panel, /Export every so often|JSON backup/i)
+})
+
+test('PersonPage displays best finish as an explicit fun stat', async () => {
+  const page = await readFile(new URL('../src/components/PersonPage.jsx', import.meta.url), 'utf8')
+
+  assert.match(page, /Best finish/)
+  assert.match(page, /stats\.bestFinish/)
+})

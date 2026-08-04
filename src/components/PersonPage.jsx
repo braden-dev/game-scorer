@@ -8,6 +8,14 @@ function formatAverage(value) {
   return value == null ? '—' : value.toFixed(2)
 }
 
+function ordinal(value) {
+  if (value == null) return '—'
+  const suffix = value % 100 >= 11 && value % 100 <= 13
+    ? 'th'
+    : ({ 1: 'st', 2: 'nd', 3: 'rd' }[value % 10] ?? 'th')
+  return `${value}${suffix} place`
+}
+
 function formatMetricName(name) {
   return name.replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())
 }
@@ -90,6 +98,7 @@ export default function PersonPage({ personId, roster = [], games = [], onNaviga
       <section className="panel stats-section">
         <h2 className="section-title">Fun stats</h2>
         <dl className="fun-stats">
+          <div><dt>Best finish</dt><dd>{ordinal(stats.bestFinish)}</dd></div>
           <div><dt>Longest win streak</dt><dd>{stats.longestWinStreak}</dd></div>
           <div><dt>Favorite game</dt><dd>{favorite}</dd></div>
           <div><dt>Most-played teammate</dt><dd>{stats.mostPlayedTeammate ? `${stats.mostPlayedTeammate.name} (${stats.mostPlayedTeammate.games})` : '—'}</dd></div>

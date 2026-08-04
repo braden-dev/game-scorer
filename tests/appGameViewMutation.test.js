@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as esbuild from 'esbuild'
 import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
-import { enqueueMutation, loadSyncStore, mergeRemoteState } from '../src/lib/sync.js'
+import { enqueueMutation, loadSyncStore, mergeRemoteState, saveSyncStore } from '../src/lib/sync.js'
 
 class MemoryStorage {
   #values = new Map()
@@ -314,6 +314,73 @@ test('initial migration stamps local history newer than a stale incremental curs
   assert.equal(new Set(rowVersions).size, 1)
   assert.ok(Date.parse(rowVersions[0]) > Date.parse('2026-08-04T00:00:00.000Z'))
   assert.equal(mutation.payload.rows.games[0].created_at, '1970-01-01T00:00:00.100Z')
+})
+
+test('first-run migration skips local rows already present in the cloud snapshot', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/' }
+  const cloudState = fromRemoteRows(toRemoteRows(state), null)
+  saveSyncStore({
+    cache: cloudState,
+    reconciledCache: cloudState,
+    lastSyncAt: '2026-08-04T00:00:00.000Z',
+    outbox: [],
+    initialMigrationCompleted: false,
+  })
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  const migrationPanel = findElement(appTree, (element) => element.type?.name === 'MigrationPanel')
+  assert.ok(migrationPanel)
+
+  await migrationPanel.props.onPublish()
+
+  const mutation = globalThis.__scorebookTestSync.mutations[0]
+  assert.deepEqual(mutation.payload.rows, { people: [], games: [], gamePlayers: [], rounds: [] })
+})
+
+test('JSON import stamps new rows with a fresh monotonic sync version and preserves created_at', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/' }
+  globalThis.localStorage.setItem('gamescorer.cloud.v1', JSON.stringify({
+    lastSyncAt: '2026-08-04T00:00:00.000Z',
+    outbox: [],
+  }))
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  let appTree = App()
+  const homeComponent = childrenOf(appContent(appTree))[0]
+  const homeTree = homeComponent.type(homeComponent.props)
+  findElement(homeTree, (element) => element.props?.['aria-label'] === 'Data and backup').props.onClick()
+  globalThis.__scorebookTestReact.begin()
+  appTree = App()
+  const dataPanel = findElement(appTree, (element) => element.type?.name === 'DataPanel')
+  assert.ok(dataPanel)
+  const importedGame = {
+    ...state.games[0],
+    id: 'g_imported',
+    createdAt: 123,
+    updatedAt: 456,
+    rounds: [{ id: 'r_imported', entries: {} }],
+  }
+  dataPanel.props.onImport({ ...state, games: [...state.games, importedGame] })
+
+  const mutation = globalThis.__scorebookTestSync.mutations[0]
+  const rows = [
+    ...mutation.payload.rows.games,
+    ...mutation.payload.rows.gamePlayers,
+    ...mutation.payload.rows.rounds,
+  ]
+  assert.ok(rows.length > 0)
+  assert.equal(new Set(rows.map((row) => row.updated_at)).size, 1)
+  assert.ok(Date.parse(rows[0].updated_at) > Date.parse('2026-08-04T00:00:00.000Z'))
+  assert.equal(mutation.payload.rows.games.find((game) => game.id === 'g_imported').created_at, '1970-01-01T00:00:00.123Z')
 })
 
 test('editing a synced round advances only that round in the queued mutation', async () => {

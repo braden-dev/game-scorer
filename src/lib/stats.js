@@ -32,19 +32,14 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
-function assertKnownGameShape(game) {
-  if (!isRecord(game) || typeof game.gameId !== 'string') {
-    throw new TypeError('Malformed known game: expected a game object with a gameId')
-  }
-  if (!Array.isArray(game.players) || game.players.some((player) => !isRecord(player) || typeof player.id !== 'string')) {
-    throw new TypeError(`Malformed known game ${game.gameId}: expected players with string IDs`)
-  }
-  if (!isRecord(game.settings) || !Array.isArray(game.rounds)) {
-    throw new TypeError(`Malformed known game ${game.gameId}: expected settings and rounds`)
-  }
-  if (game.rounds.some((round) => !isRecord(round) || !isRecord(round.entries))) {
-    throw new TypeError(`Malformed known game ${game.gameId}: expected round entries`)
-  }
+function knownGameShape(game) {
+  return isRecord(game)
+    && typeof game.gameId === 'string'
+    && Array.isArray(game.players)
+    && game.players.every((player) => isRecord(player) && typeof player.id === 'string')
+    && isRecord(game.settings)
+    && Array.isArray(game.rounds)
+    && game.rounds.every((round) => isRecord(round) && isRecord(round.entries))
 }
 
 function compareIds(firstId, secondId) {
@@ -91,15 +86,18 @@ function normalizeStandings(evaluated) {
 /**
  * Unknown game IDs are ignored. Null or empty inputs produce empty stats.
  * Known games must have the expected players, settings, rounds, and entries
- * shape; malformed known records throw TypeError, and evaluator errors are
- * intentionally allowed to surface rather than becoming zero-valued stats.
+ * shape. Malformed remote records are ignored with a diagnostic; evaluator
+ * errors from structurally valid records are intentionally still surfaced.
  */
 function evaluatedGames(games) {
   if (!Array.isArray(games)) return []
 
   return games.flatMap((game, originalIndex) => {
     if (!isRecord(game) || !knownGameDef(game.gameId)) return []
-    assertKnownGameShape(game)
+    if (!knownGameShape(game)) {
+      console.warn(`[scorebook] Skipping malformed known game ${game?.id ?? 'unknown'} in stats`)
+      return []
+    }
     const evaluated = evaluate(game)
     if (evaluated?.status?.finished !== true) return []
     const standings = normalizeStandings(evaluated)
@@ -133,11 +131,13 @@ function buildSummary(personId, records) {
   const gameCounts = new Map()
   const teammateCounts = new Map()
   let totalRank = 0
+  let bestFinish = null
   let longestWinStreak = 0
   let currentWinStreak = 0
 
   for (const { record, row } of personRecords) {
     totalRank += row.rank
+    bestFinish = bestFinish === null ? row.rank : Math.min(bestFinish, row.rank)
     gameCounts.set(record.game.gameId, (gameCounts.get(record.game.gameId) || 0) + 1)
     if (row.rank === 1) {
       currentWinStreak += 1
@@ -162,6 +162,7 @@ function buildSummary(personId, records) {
     wins,
     winRate: games ? wins / games : 0,
     averageFinish: games ? totalRank / games : null,
+    bestFinish,
     longestWinStreak,
     favoriteGame: favoriteGame(gameCounts),
     mostPlayedTeammate: teammate ? { ...teammate } : null,

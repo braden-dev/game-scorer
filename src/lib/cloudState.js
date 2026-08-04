@@ -56,6 +56,79 @@ function isSupportedGame(game) {
   return SUPPORTED_GAME_IDS.has(field(game, 'gameId', 'game_id'))
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function warnMalformedRemote(kind, row, reason) {
+  const identity = row?.id ?? row?.game_id ?? row?.person_id ?? 'unknown'
+  console.warn(`[scorebook] Skipping malformed remote ${kind} (${identity}): ${reason}`)
+}
+
+const REMOTE_SETTING_TYPES = {
+  farkle: {
+    target: 'number', opening: 'number', straight: 'number', threePairs: 'number',
+    twoTriplets: 'number', multiRule: 'string',
+  },
+  'dutch-blitz': { target: 'number', blitzPenalty: 'number' },
+  'three-thirteen': {
+    rounds: 'number', faceValue: 'string', aceValue: 'number', jokerValue: 'number', firstOutBonus: 'number',
+  },
+}
+
+function validRemoteSettings(gameId, settings) {
+  if (!isRecord(settings)) return false
+  return Object.entries(settings).every(([key, value]) => {
+    const expectedType = REMOTE_SETTING_TYPES[gameId]?.[key]
+    if (!expectedType) return true
+    return typeof value === expectedType && (expectedType !== 'number' || Number.isFinite(value))
+  })
+}
+
+function validRemoteRow(kind, row) {
+  if (!isRecord(row)) return false
+  if (kind === 'person') {
+    return typeof row.id === 'string' && row.id.length > 0
+      && (isTombstone(row) || typeof row.name === 'string')
+  }
+  if (kind === 'game') {
+    return typeof row.id === 'string' && row.id.length > 0
+      && (isTombstone(row)
+        ? (row.game_id === undefined || isSupportedGame(row))
+        : isSupportedGame(row) && validRemoteSettings(row.game_id, row.settings))
+  }
+  if (kind === 'player') {
+    return typeof row.game_id === 'string' && row.game_id.length > 0
+      && typeof row.person_id === 'string' && row.person_id.length > 0
+      && (isTombstone(row)
+        || ((row.seat_order === undefined || Number.isInteger(row.seat_order))
+          && (row.name_snapshot === undefined || typeof row.name_snapshot === 'string')))
+  }
+  return typeof row.game_id === 'string' && row.game_id.length > 0
+    && typeof row.id === 'string' && row.id.length > 0
+    && (isTombstone(row)
+      || ((row.round_index === undefined || Number.isInteger(row.round_index)) && isRecord(row.entries)))
+}
+
+function validRows(kind, input) {
+  return rows(input).filter((row) => {
+    if (validRemoteRow(kind, row)) return true
+    warnMalformedRemote(kind, row, 'unexpected identity or payload shape')
+    return false
+  })
+}
+
+function remoteRowIdentity(kind, row) {
+  if (kind === 'people') return row?.id == null ? null : String(row.id)
+  if (kind === 'games') return row?.id == null ? null : String(row.id)
+  if (kind === 'gamePlayers') {
+    if (row?.game_id == null || row?.person_id == null) return null
+    return `${row.game_id}\u0000${row.person_id}`
+  }
+  if (row?.game_id == null || row?.id == null) return null
+  return `${row.game_id}\u0000${row.id}`
+}
+
 function withTimestamps(record, updatedAt, createdAt = undefined) {
   Object.defineProperty(record, 'updatedAt', {
     value: updatedAt,
@@ -555,6 +628,18 @@ export function stampMigrationRows(remoteRows, updatedAt = new Date().toISOStrin
   )
 }
 
+/**
+ * Initial migration is additive: a cloud row with the same identity is already
+ * authoritative, so do not submit the local copy as an update or conflict.
+ */
+export function filterRowsAlreadyInCloud(localRows, cloudRows) {
+  const groups = ['people', 'games', 'gamePlayers', 'rounds']
+  return Object.fromEntries(groups.map((group) => {
+    const cloudIdentities = new Set(rows(cloudRows?.[group]).map((row) => remoteRowIdentity(group, row)).filter(Boolean))
+    return [group, rows(localRows?.[group]).filter((row) => !cloudIdentities.has(remoteRowIdentity(group, row)))]
+  }))
+}
+
 export function migrationCounts(state) {
   const allGames = rows(state?.games)
   const games = allGames.filter(isSupportedGame)
@@ -612,14 +697,19 @@ export function toRemoteRowsDelta(state, previousState = {}, options = {}) {
   return remoteRows
 }
 
-export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, activeGameId = null) {
-  const visiblePeople = rows(people).filter((person) => !isTombstone(person))
+export function fromRemoteRows(input = {}, activeGameId = null) {
+  const { people, games, gamePlayers, rounds } = isRecord(input) ? input : {}
+  const validPeople = validRows('person', people)
+  const validGames = validRows('game', games)
+  const validPlayers = validRows('player', gamePlayers)
+  const validRounds = validRows('round', rounds)
+  const visiblePeople = validPeople.filter((person) => !isTombstone(person))
   const peopleById = new Map(visiblePeople.map((person) => [person.id, person]))
-  const visibleGames = rows(games).filter((game) => !isTombstone(game))
+  const visibleGames = validGames.filter((game) => !isTombstone(game))
   const visibleGameIds = new Set(visibleGames.map((game) => game.id))
 
   const playersByGameId = new Map()
-  for (const player of rows(gamePlayers)) {
+  for (const player of validPlayers) {
     if (isTombstone(player) || !visibleGameIds.has(player.game_id)) continue
     const gamePlayersForGame = playersByGameId.get(player.game_id) ?? []
     gamePlayersForGame.push(player)
@@ -627,7 +717,7 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, acti
   }
 
   const roundsByGameId = new Map()
-  for (const round of rows(rounds)) {
+  for (const round of validRounds) {
     if (isTombstone(round) || !visibleGameIds.has(round.game_id)) continue
     const roundsForGame = roundsByGameId.get(round.game_id) ?? []
     roundsForGame.push(round)
@@ -668,25 +758,25 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, acti
   })
 
   return setMetadata({ games: nestedGames, roster, activeGameId }, {
-    roster: rows(people)
+    roster: validPeople
       .filter(isTombstone)
       .map((person) => tombstoneRecord(person, person.id)),
-    games: rows(games)
+    games: validGames
       .filter(isTombstone)
       .map((game) => tombstoneRecord(game, game.id)),
     gamePlayers: [
-      ...rows(gamePlayers)
+      ...validPlayers
         .filter(isTombstone)
         .map((player) => tombstoneRecord(player, player.person_id, player.game_id)),
-      ...rows(gamePlayers)
+      ...validPlayers
         .filter((player) => !isTombstone(player) && !visibleGameIds.has(player.game_id))
         .map((player) => childPlayerMetadata(player, peopleById)),
     ],
     rounds: [
-      ...rows(rounds)
+      ...validRounds
         .filter(isTombstone)
         .map((round) => tombstoneRecord(round, round.id, round.game_id)),
-      ...rows(rounds)
+      ...validRounds
         .filter((round) => !isTombstone(round) && !visibleGameIds.has(round.game_id))
         .map(childRoundMetadata),
     ],

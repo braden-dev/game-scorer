@@ -89,6 +89,7 @@ test('excludes unfinished games and ignores unknown game definitions', () => {
     wins: 0,
     winRate: 0,
     averageFinish: null,
+    bestFinish: null,
     longestWinStreak: 0,
     favoriteGame: null,
     mostPlayedTeammate: null,
@@ -107,6 +108,7 @@ test('counts unique and tied first places, win rate, and average rank', () => {
     wins: 2,
     winRate: 2 / 3,
     averageFinish: 4 / 3,
+    bestFinish: 1,
     longestWinStreak: 2,
     favoriteGame: 'farkle',
     mostPlayedTeammate: { id: 'p2', name: 'P2', games: 3 },
@@ -197,6 +199,16 @@ test('follows finished-game order for win streaks and counts shared teammates', 
   assert.deepEqual(stats.mostPlayedTeammate, { id: 'p2', name: 'P2', games: 4 })
 })
 
+test('tracks the best final rank from finished games', () => {
+  const stats = buildPersonStats('p1', [
+    dated(farkle('second-place', { p1: 50, p2: 100 }), 100, 1),
+    dated(farkle('first-place', { p1: 100, p2: 50 }), 200, 2),
+  ])
+
+  assert.equal(stats.bestFinish, 1)
+  assert.equal(buildPersonStats('p3', [farkle('no-finish', { p1: 100, p2: 50 })]).bestFinish, null)
+})
+
 test('uses createdAt as the chronological fallback when finishedAt is missing', () => {
   const games = [
     dated(farkle('later', { p1: 100, p2: 50 }), null, 300),
@@ -218,11 +230,25 @@ test('uses game ID before input index for equal finishedAt streak ordering', () 
   assert.equal(buildPersonStats('p1', [games[2], games[0], games[1]]).longestWinStreak, 1)
 })
 
-test('surfaces malformed known-game records instead of treating them as zero stats', () => {
-  assert.throws(
-    () => buildPersonStats('p1', [{ id: 'bad', gameId: 'farkle', players: [] }]),
-    { name: 'TypeError', message: /malformed/i },
-  )
+test('ignores malformed known-game records and logs a diagnostic', () => {
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => warnings.push(args.join(' '))
+  try {
+    assert.deepEqual(buildPersonStats('p1', [{ id: 'bad', gameId: 'farkle', players: [] }]), {
+      games: 0,
+      wins: 0,
+      winRate: 0,
+      averageFinish: null,
+      bestFinish: null,
+      longestWinStreak: 0,
+      favoriteGame: null,
+      mostPlayedTeammate: null,
+    })
+    assert.ok(warnings.some((message) => /malformed/i.test(message)))
+  } finally {
+    console.warn = originalWarn
+  }
 })
 
 test('ignores reserved object-prototype IDs as unknown games', () => {
@@ -232,6 +258,7 @@ test('ignores reserved object-prototype IDs as unknown games', () => {
       wins: 0,
       winRate: 0,
       averageFinish: null,
+      bestFinish: null,
       longestWinStreak: 0,
       favoriteGame: null,
       mostPlayedTeammate: null,
@@ -289,6 +316,7 @@ test('returns stable empty results for null and empty inputs', () => {
     wins: 0,
     winRate: 0,
     averageFinish: null,
+    bestFinish: null,
     longestWinStreak: 0,
     favoriteGame: null,
     mostPlayedTeammate: null,
@@ -298,6 +326,7 @@ test('returns stable empty results for null and empty inputs', () => {
     wins: 0,
     winRate: 0,
     averageFinish: null,
+    bestFinish: null,
     longestWinStreak: 0,
     favoriteGame: null,
     mostPlayedTeammate: null,

@@ -5,7 +5,7 @@ import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.j
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { clone, loadSyncStore } from './lib/sync.js'
-import { findCloudTombstone, stampMigrationRows, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
+import { filterRowsAlreadyInCloud, findCloudTombstone, stampMigrationRows, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
@@ -533,35 +533,29 @@ export default function App() {
     const migrationStore = loadSyncStore()
     const existingMigration = migrationStore.outbox.find((mutation) => mutation.initialMigration)
     const migrationId = existingMigration?.id ?? uid('migration')
-    const syncVersion = migrationVersion(migrationStore.lastSyncAt)
-    if (!existingMigration) {
-      applyMutation(
-        (prev) => prev,
-        (nextState) => ({
-          id: migrationId,
-          entity: 'scorebook',
-          operation: 'upsert',
-          initialMigration: true,
-          payload: { rows: stampMigrationRows(toRemoteRows(nextState), syncVersion) },
-        }),
-      )
-    } else {
-      sync.updateSyncStore((store) => ({
-        ...store,
-        lastError: null,
-        outbox: store.outbox.map((mutation) => {
-          if (mutation.id !== migrationId) return mutation
-          const refreshed = {
-            ...mutation,
-            payload: { rows: stampMigrationRows(toRemoteRows(stateRef.current), syncVersion) },
-          }
-          delete refreshed.status
-          delete refreshed.error
-          delete refreshed.conflictedAt
-          return refreshed
-        }),
-      }))
-    }
+    if (existingMigration) sync.cancelSyncMutations?.((mutation) => mutation.id === migrationId)
+
+    // A first publish reads the complete cloud snapshot first. This keeps the
+    // migration additive and prevents local history from competing with rows
+    // that were already seeded by another device.
+    await sync.syncNow({ initial: true })
+    const cloudRows = toRemoteRows(loadSyncStore().reconciledCache)
+    const syncVersion = migrationVersion(loadSyncStore().lastSyncAt)
+    applyMutation(
+      (prev) => prev,
+      (nextState) => ({
+        id: migrationId,
+        entity: 'scorebook',
+        operation: 'upsert',
+        initialMigration: true,
+        payload: {
+          rows: stampMigrationRows(
+            filterRowsAlreadyInCloud(toRemoteRows(nextState), cloudRows),
+            syncVersion,
+          ),
+        },
+      }),
+    )
     await sync.syncNow()
     const store = loadSyncStore()
     if (store.outbox.some((mutation) => mutation.id === migrationId)) {
@@ -652,7 +646,15 @@ export default function App() {
             onPublishMigration={publishMigration}
             onImport={(imported) => applyMutation(
               () => migrateState(imported),
-              stateChangeMutation,
+              (nextState, previousState) => ({
+                ...stateChangeMutation(nextState, previousState),
+                payload: {
+                  rows: stampMigrationRows(
+                    toRemoteRowsDelta(nextState, previousState),
+                    migrationVersion(loadSyncStore().lastSyncAt),
+                  ),
+                },
+              }),
             )}
             onClose={() => setShowData(false)}
           />

@@ -150,6 +150,13 @@ export default function DataPanel({
         </p>
       )}
 
+      {sync && (
+        <p className="hint">
+          Supabase Free projects may pause after inactivity, and the Free plan does not provide
+          automatic downloadable database backups. Keep exporting this JSON backup somewhere safe.
+        </p>
+      )}
+
       <h4 className="data-head">Keeping your history safe</h4>
       <p className="hint">
         Scores live in this browser's storage. Installing to your home screen is what keeps them

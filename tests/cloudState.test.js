@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, migrationCounts, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, filterRowsAlreadyInCloud, fromRemoteRows, migrationCounts, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
 
 test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
@@ -166,6 +166,75 @@ test('migration omits unsupported game tombstones from cloud rows', () => {
   })
 
   assert.deepEqual(toRemoteRows(state), { people: [], games: [], gamePlayers: [], rounds: [] })
+})
+
+test('first-run migration filters rows whose identities already exist in cloud', () => {
+  const localRows = {
+    people: [
+      { id: 'p_existing', name: 'Local stale name' },
+      { id: 'p_new', name: 'New player' },
+    ],
+    games: [
+      { id: 'g_existing', game_id: 'farkle', settings: { target: 100 }, updated_at: '2026-01-02T00:00:00.000Z' },
+      { id: 'g_new', game_id: 'farkle', settings: { target: 100 }, updated_at: '2026-01-02T00:00:00.000Z' },
+    ],
+    gamePlayers: [
+      { game_id: 'g_existing', person_id: 'p_existing', seat_order: 0 },
+      { game_id: 'g_new', person_id: 'p_new', seat_order: 0 },
+    ],
+    rounds: [
+      { id: 'r_existing', game_id: 'g_existing', round_index: 0, entries: {} },
+      { id: 'r_new', game_id: 'g_new', round_index: 0, entries: {} },
+    ],
+  }
+  const cloudRows = {
+    people: [{ id: 'p_existing', name: 'Shared name' }],
+    games: [{ id: 'g_existing', game_id: 'farkle', settings: { target: 100 } }],
+    gamePlayers: [{ game_id: 'g_existing', person_id: 'p_existing', seat_order: 0 }],
+    rounds: [{ id: 'r_existing', game_id: 'g_existing', round_index: 0, entries: { p_existing: { score: 10 } } }],
+  }
+
+  const filtered = filterRowsAlreadyInCloud(localRows, cloudRows)
+
+  assert.deepEqual(filtered.people.map(({ id }) => id), ['p_new'])
+  assert.deepEqual(filtered.games.map(({ id }) => id), ['g_new'])
+  assert.deepEqual(filtered.gamePlayers.map(({ game_id, person_id }) => [game_id, person_id]), [['g_new', 'p_new']])
+  assert.deepEqual(filtered.rounds.map(({ id }) => id), ['r_new'])
+})
+
+test('fromRemoteRows ignores malformed records, logs a diagnostic, and keeps valid records', () => {
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => warnings.push(args.join(' '))
+  try {
+    const state = fromRemoteRows({
+      people: [
+        { id: 'p_valid', name: 'Valid' },
+        { id: 'p_bad', name: null },
+      ],
+      games: [
+        { id: 'g_valid', game_id: 'farkle', settings: { target: 100 } },
+        { id: 'g_unknown', game_id: 'future-game', settings: {} },
+        { id: 'g_bad_settings', game_id: 'farkle', settings: { target: '100' } },
+      ],
+      gamePlayers: [
+        { game_id: 'g_valid', person_id: 'p_valid', seat_order: 0, name_snapshot: 'Valid' },
+        { game_id: 'g_valid', person_id: 'p_bad_player', seat_order: 'first', name_snapshot: 'Bad' },
+      ],
+      rounds: [
+        { id: 'r_valid', game_id: 'g_valid', round_index: 0, entries: {} },
+        { id: 'r_bad', game_id: 'g_valid', round_index: 1, entries: null },
+      ],
+    })
+
+    assert.deepEqual(state.roster.map(({ id }) => id), ['p_valid'])
+    assert.deepEqual(state.games.map(({ id }) => id), ['g_valid'])
+    assert.deepEqual(state.games[0].players.map(({ id }) => id), ['p_valid'])
+    assert.deepEqual(state.games[0].rounds.map(({ id }) => id), ['r_valid'])
+    assert.ok(warnings.some((message) => /malformed remote/i.test(message)))
+  } finally {
+    console.warn = originalWarn
+  }
 })
 
 test('delta rows exclude unchanged local history from later normal mutations', () => {
