@@ -10,6 +10,7 @@ const repoRoot = resolve(dirname(scriptPath), '..')
 const migrationPaths = [
   resolve(repoRoot, 'supabase/migrations/20260804000100_create_scorebook.sql'),
   resolve(repoRoot, 'supabase/migrations/20260804000200_preserve_explicit_updated_at.sql'),
+  resolve(repoRoot, 'supabase/migrations/20260804000300_monotonic_updated_at_trigger.sql'),
 ]
 const linkedProjectRefPath = resolve(repoRoot, 'supabase/.temp/project-ref')
 
@@ -74,12 +75,21 @@ ${migrationSql}
 insert into public.games (id, game_id, settings)
 values ('${escapeSqlLiteral(gameId)}', 'farkle', '{}'::jsonb);
 
--- Verify explicit application timestamps survive while ordinary updates advance them.
+-- Verify explicit newer application timestamps survive while older, null, and
+-- equal timestamps are advanced monotonically for direct/client updates.
 do $$
 declare
-  explicit_application_timestamp timestamptz := '2000-01-01T00:00:00.000Z';
+  baseline_updated_at timestamptz;
+  explicit_application_timestamp timestamptz;
+  previous_updated_at timestamptz;
   observed_updated_at timestamptz;
 begin
+  select updated_at into baseline_updated_at
+  from public.games
+  where id = '${escapeSqlLiteral(gameId)}';
+  explicit_application_timestamp := baseline_updated_at + interval '1 hour';
+
+  -- Valid soft-delete/restore/upsert versions remain authoritative.
   update public.games
   set updated_at = explicit_application_timestamp
   where id = '${escapeSqlLiteral(gameId)}';
@@ -87,12 +97,33 @@ begin
   if observed_updated_at <> explicit_application_timestamp then
     raise exception 'explicit application timestamp was not preserved';
   end if;
+  previous_updated_at := observed_updated_at;
 
+  -- Older explicit writes cannot move the sync cursor backwards.
+  update public.games
+  set updated_at = baseline_updated_at
+  where id = '${escapeSqlLiteral(gameId)}';
+  select updated_at into observed_updated_at from public.games where id = '${escapeSqlLiteral(gameId)}';
+  if observed_updated_at <= previous_updated_at then
+    raise exception 'older explicit timestamp regressed updated_at';
+  end if;
+  previous_updated_at := observed_updated_at;
+
+  update public.games
+  set updated_at = null
+  where id = '${escapeSqlLiteral(gameId)}';
+  select updated_at into observed_updated_at from public.games where id = '${escapeSqlLiteral(gameId)}';
+  if observed_updated_at <= previous_updated_at then
+    raise exception 'null timestamp did not advance updated_at';
+  end if;
+  previous_updated_at := observed_updated_at;
+
+  -- An omitted timestamp arrives as OLD.updated_at in a row update.
   update public.games
   set settings = settings
   where id = '${escapeSqlLiteral(gameId)}';
   select updated_at into observed_updated_at from public.games where id = '${escapeSqlLiteral(gameId)}';
-  if observed_updated_at <= explicit_application_timestamp then
+  if observed_updated_at <= previous_updated_at then
     raise exception 'ordinary update did not advance updated_at';
   end if;
 end $$;
@@ -181,7 +212,7 @@ async function validateLocalSql(migration) {
     if (result.status !== 0) {
       throw new Error(`local Postgres migration validation failed: ${result.stderr || result.stdout || result.error?.message || 'unknown error'}`)
     }
-    console.log('PASS: local Postgres executed the migration twice and verified live/tombstone round-index behavior (rolled back)')
+    console.log('PASS: local Postgres executed all migrations twice and verified monotonic timestamps plus live/tombstone round-index behavior (rolled back)')
   } finally {
     await rm(tempDirectory, { recursive: true, force: true })
   }

@@ -13,6 +13,10 @@ const timestampMigrationPath = path.resolve(
   path.dirname(migrationPath),
   '20260804000200_preserve_explicit_updated_at.sql',
 )
+const monotonicTimestampMigrationPath = path.resolve(
+  path.dirname(migrationPath),
+  '20260804000300_monotonic_updated_at_trigger.sql',
+)
 const migrationWorkflowPath = path.resolve(
   path.dirname(migrationPath),
   '../../.github/workflows/migration-validation.yml',
@@ -70,13 +74,18 @@ test('migration validation command includes linked lint and transactional local 
     path.resolve(path.dirname(migrationPath), '../../scripts/validate-migration.mjs'),
     'utf8',
   )
+  const migrationFiles = fs.readdirSync(path.dirname(migrationPath))
+    .filter((file) => file.endsWith('.sql'))
 
   assert.match(validationScript, /\['db', 'lint', '--linked'\]/)
-  assert.match(validationScript, /20260804000200_preserve_explicit_updated_at\.sql/)
+  for (const migrationFile of migrationFiles) {
+    assert.match(validationScript, new RegExp(migrationFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
   assert.match(validationScript, /Run the migration twice in one transaction/)
   assert.match(validationScript, /ROLLBACK;/)
   assert.match(validationScript, /live\/tombstone round-index behavior/)
   assert.match(validationScript, /explicit application timestamp/)
+  assert.match(validationScript, /monotonic|regress/i)
 })
 
 test('follow-up timestamp migration preserves explicit application versions and is rerun-safe', () => {
@@ -84,6 +93,15 @@ test('follow-up timestamp migration preserves explicit application versions and 
   assert.match(timestampMigration, /create\s+or\s+replace\s+function\s+public\.set_updated_at\s*\(\)/i)
   assert.match(timestampMigration, /if\s+new\.updated_at\s+is\s+null\s+or\s+new\.updated_at\s*=\s+old\.updated_at/i)
   assert.match(timestampMigration, /new\.updated_at\s*=\s+now\(\)/i)
+  assert.equal((timestampMigration.match(/create\s+or\s+replace\s+function/gi) ?? []).length, 1)
+})
+
+test('latest timestamp migration prevents regressions while preserving newer explicit versions', () => {
+  const timestampMigration = fs.readFileSync(monotonicTimestampMigrationPath, 'utf8')
+  assert.match(timestampMigration, /create\s+or\s+replace\s+function\s+public\.set_updated_at\s*\(\)/i)
+  assert.match(timestampMigration, /if\s+new\.updated_at\s+is\s+null\s+or\s+new\.updated_at\s*<=\s*old\.updated_at/i)
+  assert.match(timestampMigration, /new\.updated_at\s*=\s*greatest\s*\(\s*now\(\)\s*,\s*old\.updated_at\s*\+\s*interval\s+'1\s+microsecond'\s*\)/i)
+  assert.match(timestampMigration, /end\s+if\s*;/i)
   assert.equal((timestampMigration.match(/create\s+or\s+replace\s+function/gi) ?? []).length, 1)
 })
 
@@ -109,7 +127,7 @@ test('Pages deployment is gated by one verified production artifact', () => {
   assert.match(workflow, /build:\s*\n\s+needs:\s+verify/)
   assert.match(workflow, /build:[\s\S]*?download-artifact@v4[\s\S]*?upload-pages-artifact@v3/)
   assert.match(workflow, /deploy:\s*\n\s+needs:\s+build/)
-  assert.equal((workflow.match(/VITE_SUPABASE_URL/g) ?? []).length, 2)
-  assert.equal((workflow.match(/VITE_SUPABASE_PUBLISHABLE_KEY/g) ?? []).length, 2)
+  assert.equal((workflow.match(/VITE_SUPABASE_URL/g) ?? []).length, 3)
+  assert.equal((workflow.match(/VITE_SUPABASE_PUBLISHABLE_KEY/g) ?? []).length, 3)
   assert.doesNotMatch(workflow, /secrets\./)
 })

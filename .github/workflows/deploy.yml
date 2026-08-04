@@ -47,7 +47,10 @@ jobs:
 
       - name: Build
         # Pages serves the site from /<repo>/, so assets need that prefix.
-        run: BUILD_BASE="/${GITHUB_REPOSITORY#*/}/" npm run build
+        run: |
+          test -n "${VITE_SUPABASE_URL:-}"
+          test -n "${VITE_SUPABASE_PUBLISHABLE_KEY:-}"
+          BUILD_BASE="/${GITHUB_REPOSITORY#*/}/" npm run build
         env:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
