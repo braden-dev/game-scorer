@@ -44,6 +44,11 @@ create table if not exists public.game_players (
   primary key (game_id, person_id)
 );
 
+alter table public.game_players
+  add column if not exists updated_at timestamptz not null default now();
+alter table public.game_players
+  add column if not exists deleted_at timestamptz;
+
 create index if not exists game_players_person_idx on public.game_players (person_id);
 
 create table if not exists public.rounds (
@@ -55,6 +60,8 @@ create table if not exists public.rounds (
   deleted_at timestamptz,
   unique (game_id, round_index)
 );
+
+drop index if exists public.rounds_game_idx;
 
 drop trigger if exists people_set_updated_at on public.people;
 create trigger people_set_updated_at
