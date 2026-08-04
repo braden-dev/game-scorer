@@ -20,6 +20,8 @@ const REMOTE_KEYS = ['people', 'games', 'gamePlayers', 'rounds']
 const RETRY_BASE_DELAY_MS = 50
 const RETRY_MAX_DELAY_MS = 1000
 const MAX_AUTOMATIC_RETRIES = 5
+export const CONFLICT_MESSAGE = 'This was changed on another device. The shared version is now shown.'
+const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
 
 function online() {
   return globalThis.navigator?.onLine !== false
@@ -60,6 +62,57 @@ function rowsForMutation(mutation) {
     remoteRowKey,
     remoteRowKey === key ? [payload?.row ?? payload] : [],
   ]))
+}
+
+function isCasConflict(error) {
+  const message = messageFor(error)
+  return /stale mutation|conflicting equal-version row/i.test(message)
+}
+
+function removeConflictRows(cache, mutation) {
+  const rows = rowsForMutation(mutation) ?? {}
+  const gameIds = new Set((rows.games ?? []).map((row) => row?.id).filter(Boolean))
+  const personIds = new Set((rows.people ?? []).map((row) => row?.id).filter(Boolean))
+  const roundIds = new Set((rows.rounds ?? []).map((row) => `${row?.game_id}\u0000${row?.id}`))
+  const playerIds = new Set((rows.gamePlayers ?? []).map((row) => `${row?.game_id}\u0000${row?.person_id}`))
+
+  if (mutation?.entity === 'games') gameIds.add(mutation.entityId)
+  if (mutation?.entity === 'people') personIds.add(mutation.entityId)
+  if (mutation?.entity === 'rounds') {
+    const gameId = mutation.payload?.gameId ?? mutation.payload?.game_id
+    if (gameId != null) roundIds.add(`${gameId}\u0000${mutation.entityId}`)
+  }
+  if (mutation?.entity === 'game_players' || mutation?.entity === 'gamePlayers') {
+    const gameId = mutation.entityId?.gameId ?? mutation.entityId?.game_id
+    const personId = mutation.entityId?.personId ?? mutation.entityId?.person_id
+    if (gameId != null && personId != null) playerIds.add(`${gameId}\u0000${personId}`)
+  }
+
+  const next = {
+    ...cache,
+    roster: (cache?.roster ?? []).filter((person) => !personIds.has(person.id)),
+    games: (cache?.games ?? [])
+      .filter((game) => !gameIds.has(game.id))
+      .map((game) => ({
+        ...game,
+        players: (game.players ?? []).filter((player) => !playerIds.has(`${game.id}\u0000${player.id}`)),
+        rounds: (game.rounds ?? []).filter((round) => !roundIds.has(`${game.id}\u0000${round.id}`)),
+      })),
+  }
+  const metadata = cache?.[CLOUD_METADATA]
+  if (metadata) {
+    Object.defineProperty(next, CLOUD_METADATA, {
+      configurable: true,
+      value: {
+        ...metadata,
+        roster: (metadata.roster ?? []).filter((person) => !personIds.has(person.id)),
+        games: (metadata.games ?? []).filter((game) => !gameIds.has(game.id)),
+        gamePlayers: (metadata.gamePlayers ?? []).filter((player) => !playerIds.has(`${player.gameId}\u0000${player.id}`)),
+        rounds: (metadata.rounds ?? []).filter((round) => !roundIds.has(`${round.gameId}\u0000${round.id}`)),
+      },
+    })
+  }
+  return next
 }
 
 function mutationUpdatedAt(mutation) {
@@ -241,7 +294,36 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       let replayedSoftDelete = false
       for (const mutation of [...store.outbox]) {
         if (!(storeRef.current?.outbox ?? store.outbox).some((queued) => queued.id === mutation.id)) continue
-        const response = await replayMutation(mutation)
+        let response
+        try {
+          response = await replayMutation(mutation)
+        } catch (replayError) {
+          if (!isCasConflict(replayError)) throw replayError
+
+          const refreshedRows = await apiRef.current.fetchSnapshot()
+          const latestStoreAfterConflict = storeRef.current ?? store
+          const latestActiveGameId = activeGameIdForSync(stateRef, latestStoreAfterConflict)
+          const remoteState = fromRemoteRows(refreshedRows, latestActiveGameId)
+          const localWithoutConflict = removeConflictRows(latestStoreAfterConflict.cache, mutation)
+          const refreshedCache = copyCloudMetadata({
+            ...mergeRemoteState(localWithoutConflict, remoteState, previousSyncAt),
+            activeGameId: latestActiveGameId,
+          }, remoteState)
+          store = commitStore({
+            ...latestStoreAfterConflict,
+            cache: refreshedCache,
+            reconciledCache: copyCloudMetadata({ ...remoteState, activeGameId: latestActiveGameId }, remoteState),
+            lastError: CONFLICT_MESSAGE,
+          })
+          stateRef.current = refreshedCache
+          if (mountedRef.current) {
+            setState(refreshedCache)
+            setError(CONFLICT_MESSAGE)
+            setStatus('error')
+          }
+          clearRetry()
+          return
+        }
         replayedSoftDelete ||= isSoftDeleteMutation(mutation)
         const latestStoreAfterReplay = storeRef.current ?? store
         const latestActiveGameId = activeGameIdForSync(stateRef, latestStoreAfterReplay)

@@ -18,6 +18,23 @@ import Leaderboard from './components/Leaderboard.jsx'
 import DataPanel from './components/DataPanel.jsx'
 import InstallBanner from './components/InstallBanner.jsx'
 import MigrationPanel from './components/MigrationPanel.jsx'
+import UndoToast from './components/UndoToast.jsx'
+
+const UNDO_WINDOW_MS = 10_000
+
+function snapshot(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function revivedGame(game, deletedAt) {
+  const updatedAt = Math.max(Date.now(), (Number(deletedAt) || 0) + 1)
+  return {
+    ...snapshot(game),
+    updatedAt,
+    players: game.players.map((player) => ({ ...player, updatedAt })),
+    rounds: game.rounds.map((round) => ({ ...round, updatedAt })),
+  }
+}
 
 export default function App() {
   const [state, setState] = useState(() => migrateState(loadState()))
@@ -29,6 +46,8 @@ export default function App() {
     () => loadSyncStore().initialMigrationCompleted,
   )
   const stateRef = useRef(state)
+  const undoRef = useRef(null)
+  const [undoAction, setUndoAction] = useState(null)
   const install = useInstallPrompt()
   const configured = cloudConfigured()
   const sync = useCloudSync(state, setState)
@@ -77,6 +96,54 @@ export default function App() {
     }
     return next
   }, [configured, sync])
+
+  const showUndo = useCallback((action) => {
+    const next = { ...action, id: uid('undo'), expiresAt: Date.now() + UNDO_WINDOW_MS }
+    undoRef.current = next
+    setUndoAction(next)
+  }, [])
+
+  const expireUndo = useCallback((id) => {
+    if (undoRef.current?.id !== id) return
+    undoRef.current = null
+    setUndoAction(null)
+  }, [])
+
+  const undo = useCallback(() => {
+    const action = undoRef.current
+    if (!action || action.expiresAt <= Date.now()) {
+      if (action) expireUndo(action.id)
+      return
+    }
+    undoRef.current = null
+    setUndoAction(null)
+    if (action.mutationId) sync.cancelSyncMutations?.((mutation) => mutation.id === action.mutationId)
+
+    applyMutation((previous) => {
+      if (action.kind === 'game') {
+        if (previous.games.some((game) => game.id === action.game.id)) return previous
+        const games = previous.games.slice()
+        games.splice(Math.min(action.gameIndex, games.length), 0, revivedGame(action.game, action.deletedAt))
+        return {
+          ...previous,
+          games,
+          activeGameId: previous.activeGameId === null && action.previousActiveGameId === action.game.id
+            ? action.game.id
+            : previous.activeGameId,
+        }
+      }
+
+      const game = previous.games.find((candidate) => candidate.id === action.gameId)
+      if (!game || game.rounds.some((round) => round.id === action.round.id)) return previous
+      const rounds = game.rounds.slice()
+      rounds.splice(Math.min(action.roundIndex, rounds.length), 0, {
+        ...snapshot(action.round),
+        updatedAt: Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1),
+      })
+      const updatedGame = revivedGame({ ...game, rounds }, action.deletedAt)
+      return { ...previous, games: previous.games.map((candidate) => candidate.id === game.id ? updatedGame : candidate) }
+    }, stateChangeMutation)
+  }, [applyMutation, expireUndo, stateChangeMutation, sync])
 
   // A record for a game this build doesn't know about would crash every screen
   // that scores it. That happens for real: an installed PWA can be running a
@@ -147,6 +214,12 @@ export default function App() {
     // Re-derive the finished flag so the home screen and banner stay honest
     // when rounds are edited or deleted after the fact.
     const { status } = evaluate(updated)
+    const previousGame = stateRef.current.games.find((game) => game.id === updated.id)
+    const removedRound = previousGame?.rounds?.find(
+      (round) => !updated.rounds.some((candidate) => candidate.id === round.id),
+    )
+    const removedRoundIndex = removedRound ? previousGame.rounds.indexOf(removedRound) : -1
+    const removedRoundMutationId = removedRound ? uid('m') : null
     const next = {
       ...updated,
       updatedAt: Date.now(),
@@ -167,7 +240,7 @@ export default function App() {
         ) ?? []
         const mutations = [stateChangeMutation(nextState, previousState)]
         if (removedRound) mutations.push({
-          id: uid('m'),
+          id: removedRoundMutationId,
           entity: 'rounds',
           entityId: removedRound.id,
           operation: 'softDelete',
@@ -194,13 +267,28 @@ export default function App() {
         return mutations.length === 1 ? mutations[0] : mutations
       },
     )
+    if (removedRound && previousGame) {
+      showUndo({
+        kind: 'round',
+        gameId: next.id,
+        round: snapshot(removedRound),
+        roundIndex: removedRoundIndex,
+        deletedAt: next.updatedAt,
+        mutationId: removedRoundMutationId,
+      })
+    }
   }
 
   const deleteGame = (id) => {
     const game = state.games.find((g) => g.id === id)
     const def = game ? getGameDef(game.gameId) : null
     const label = def ? `this ${def.name} game` : 'this game'
-    if (!window.confirm(`Delete ${label}? This can't be undone.`)) return
+    if (!window.confirm(`Delete ${label}? Undo is available for 10 seconds.`)) return
+    const deletedAt = Date.now()
+    const mutationId = uid('m')
+    const gameIndex = state.games.findIndex((candidate) => candidate.id === id)
+    const previousActiveGameId = state.activeGameId
+    const gameSnapshot = snapshot(game)
     applyMutation(
       (prev) => ({
         ...prev,
@@ -208,13 +296,21 @@ export default function App() {
         activeGameId: prev.activeGameId === id ? null : prev.activeGameId,
       }),
       () => ({
-        id: uid('m'),
+        id: mutationId,
         entity: 'games',
         entityId: id,
         operation: 'softDelete',
-        updatedAt: Date.now(),
+        updatedAt: deletedAt,
       }),
     )
+    if (game) showUndo({
+      kind: 'game',
+      game: gameSnapshot,
+      gameIndex,
+      previousActiveGameId,
+      deletedAt,
+      mutationId,
+    })
   }
 
   const rematch = () => {
@@ -260,6 +356,14 @@ export default function App() {
     hadLocalDataAtStartup,
     initialMigrationCompleted,
   })
+  const undoToast = undoAction && (
+    <UndoToast
+      key={undoAction.id}
+      message={`${undoAction.kind === 'game' ? 'Game deleted.' : 'Round deleted.'} Undo is available for 10 seconds.`}
+      onUndo={undo}
+      onExpire={() => expireUndo(undoAction.id)}
+    />
+  )
 
   const requestedNewGameId = route.type === 'new-game' ? route.gameId : newGameId
   const currentNewGameId = typeof requestedNewGameId === 'string' && Object.hasOwn(GAMES_BY_ID, requestedNewGameId)
@@ -288,6 +392,7 @@ export default function App() {
         onBack={closeGame}
         onRematch={rematch}
         onAddToRoster={addToRoster}
+        undoToast={undoToast}
       />
     )
   }
@@ -334,6 +439,7 @@ export default function App() {
           onClose={() => setShowData(false)}
         />
       )}
+      {undoToast}
       {migrationVisible && (
         <MigrationPanel
           state={state}

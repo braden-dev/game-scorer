@@ -91,7 +91,9 @@ export function useCloudSync() {
       state.mutations.push(mutation)
       return mutation
     },
-    cancelSyncMutations() {},
+    cancelSyncMutations(predicate) {
+      state.mutations = state.mutations.filter((mutation) => !predicate?.(mutation))
+    },
     updateSyncStore() {},
   }
 }
@@ -149,6 +151,12 @@ function findElement(element, predicate) {
   return null
 }
 
+function textOf(element) {
+  if (element === null || element === undefined || typeof element === 'boolean') return ''
+  if (typeof element === 'string' || typeof element === 'number') return String(element)
+  return childrenOf(element).map(textOf).join(' ')
+}
+
 function gameState() {
   return {
     activeGameId: 'g_mutations',
@@ -183,6 +191,7 @@ function prepareStorage(state) {
   globalThis.window = {
     matchMedia: () => ({ matches: false }),
     navigator: { standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+    confirm: () => true,
     addEventListener() {},
     removeEventListener() {},
   }
@@ -229,6 +238,128 @@ test('App round deletion queues the updated game before the round tombstone', as
     roundIndex: 0,
     entries: { p_one: { score: 500 }, p_two: { score: 700 } },
   })
+})
+
+test('round deletion asks for confirmation and explains the brief Undo window', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  const confirmations = []
+  globalThis.window.confirm = (message) => {
+    confirmations.push(message)
+    return false
+  }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  globalThis.__scorebookTestReact.reset()
+  globalThis.__scorebookTestReact.begin()
+  let gameTree = appTree.type(appTree.props)
+  const historyRow = findElement(gameTree, (element) => element.type === 'tr' && element.props?.onClick)
+  assert.ok(historyRow)
+  historyRow.props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  gameTree = appTree.type(appTree.props)
+  const roundSheet = findElement(gameTree, (element) => element.props?.onDelete)
+  assert.ok(roundSheet)
+  roundSheet.props.onDelete()
+
+  assert.deepEqual(confirmations, ['Delete this turn? Undo is available for 10 seconds.'])
+  assert.deepEqual(globalThis.__scorebookTestSync.mutations, [])
+})
+
+test('game deletion can be undone before the ten-second window expires', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.activeGameId = null
+  prepareStorage(state)
+  const confirmations = []
+  globalThis.window.confirm = (message) => {
+    confirmations.push(message)
+    return true
+  }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  const homeElement = appTree.props.children[0]
+  const homeTree = homeElement.type(homeElement.props)
+  const gameCard = findElement(homeTree, (element) => element.type?.name === 'GameCard')
+  assert.ok(gameCard)
+  const deleteButton = findElement(gameCard.type(gameCard.props), (element) => element.props?.['aria-label'] === 'Delete Farkle game')
+  assert.ok(deleteButton)
+  deleteButton.props.onClick()
+  assert.deepEqual(confirmations, ['Delete this Farkle game? Undo is available for 10 seconds.'])
+
+  globalThis.__scorebookTestReact.begin()
+  const appAfterDelete = App()
+  const deletedHomeElement = appAfterDelete.props.children[0]
+  let renderedHome = deletedHomeElement.type(deletedHomeElement.props)
+  const toastElement = findElement(appAfterDelete, (element) => element.type?.name === 'UndoToast')
+  assert.ok(toastElement)
+  const toast = toastElement.type(toastElement.props)
+  assert.ok(toast)
+  assert.equal(deletedHomeElement.props.games.length, 0)
+  const undoButton = findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo')
+  assert.ok(undoButton)
+  undoButton.props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const appAfterUndo = App()
+  renderedHome = appAfterUndo.props.children[0].type(appAfterUndo.props.children[0].props)
+  assert.deepEqual(appAfterUndo.props.children[0].props.games.map((game) => game.id), ['g_mutations'])
+  assert.deepEqual(globalThis.__scorebookTestSync.mutations.map(({ entity, operation }) => ({ entity, operation })), [
+    { entity: 'scorebook', operation: 'upsert' },
+  ])
+})
+
+test('expired game deletion cannot restore the snapshot', async () => {
+  const App = await loadComponent('src/App.jsx')
+  prepareStorage({ ...gameState(), activeGameId: null })
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const homeElement = initial.props.children[0]
+  const homeTree = homeElement.type(homeElement.props)
+  const gameCard = findElement(homeTree, (element) => element.type?.name === 'GameCard')
+  findElement(gameCard.type(gameCard.props), (element) => element.props?.['aria-label'] === 'Delete Farkle game').props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  const toast = findElement(afterDelete, (element) => element.type?.name === 'UndoToast')
+  assert.ok(toast)
+  toast.props.onExpire()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterExpiry = App()
+  assert.deepEqual(afterExpiry.props.children[0].props.games, [])
+  assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('gamescorer.v1')).games, [])
+})
+
+test('round deletion restores the complete round snapshot through Undo', async () => {
+  const App = await loadComponent('src/App.jsx')
+  prepareStorage(gameState())
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  initial.props.onUpdate({ ...initial.props.game, rounds: [] })
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  assert.equal(afterDelete.props.game.rounds.length, 0)
+  const toastElement = afterDelete.props.undoToast
+  assert.ok(toastElement)
+  const toast = toastElement.type(toastElement.props)
+  findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo').props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterUndo = App()
+  assert.deepEqual(afterUndo.props.game.rounds.map(({ id, entries }) => ({ id, entries })), gameState().games[0].rounds)
 })
 
 test('GameView player removal reaches App and queues a join-row tombstone', async () => {

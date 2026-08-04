@@ -33,7 +33,7 @@ export function GameCard({ game, onOpen, onDelete }) {
           ))}
         </span>
       </button>
-      {onDelete && <button type="button" className="icon-btn danger" onClick={onDelete} aria-label="Delete game">🗑</button>}
+      {onDelete && <button type="button" className="icon-btn danger" onClick={onDelete} aria-label={`Delete ${def.name} game`}>🗑</button>}
     </li>
   )
 }

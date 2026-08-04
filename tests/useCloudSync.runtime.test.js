@@ -250,6 +250,78 @@ test('keeps a soft-delete mutation pending when the API rejects a zero-row updat
   }
 })
 
+test('refreshes the shared row and preserves a pending CAS conflict error', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const serverUpdatedAt = '2026-01-04T00:00:00.000Z'
+  let snapshotCalls = 0
+  const sharedRows = {
+    people: [],
+    games: [{
+      id: 'g_conflict',
+      game_id: 'farkle',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: serverUpdatedAt,
+      settings: {},
+      finished_at: null,
+      deleted_at: null,
+    }],
+    gamePlayers: [],
+    rounds: [],
+  }
+  const api = {
+    fetchSnapshot: async () => { snapshotCalls += 1; return sharedRows },
+    fetchRowsUpdatedSince: async () => sharedRows,
+    upsertRows: async () => { throw new Error('Supabase games: stale mutation; newer remote row exists') },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null, updates: [] }
+  function Harness() {
+    observed.hook = useCloudSync({ activeGameId: null, games: [], roster: [] }, (nextState) => {
+      observed.updates.push(nextState)
+    }, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_conflict',
+        entity: 'scorebook',
+        operation: 'upsert',
+        payload: {
+          rows: {
+            people: [],
+            games: [{
+              id: 'g_conflict',
+              game_id: 'farkle',
+              created_at: '2026-01-01T00:00:00.000Z',
+              updated_at: '2026-01-03T00:00:00.000Z',
+              settings: {},
+              finished_at: null,
+              deleted_at: null,
+            }],
+            gamePlayers: [],
+            rounds: [],
+          },
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.ok(snapshotCalls >= 2)
+    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(observed.hook.pendingCount, 1)
+    assert.equal(observed.updates.at(-1).games[0].updatedAt, Date.parse(serverUpdatedAt))
+    assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1')).outbox.map((mutation) => mutation.id), ['m_conflict'])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('keeps a successful local delete tombstoned after remote merge and replay', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

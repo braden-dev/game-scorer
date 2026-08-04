@@ -8,7 +8,7 @@ import RoundSheet from './RoundSheet.jsx'
 import PlayerChip from './PlayerChip.jsx'
 import { SettingsForm } from './fields.jsx'
 
-export default function GameView({ game, roster, onUpdate, onBack, onRematch, onAddToRoster }) {
+export default function GameView({ game, roster, onUpdate, onBack, onRematch, onAddToRoster, undoToast }) {
   const { def, totals, standings, status } = evaluate(game)
   const [sheet, setSheet] = useState(null) // { roundIndex, existing }
   const [panel, setPanel] = useState(null) // 'rules' | 'settings' | 'players'
@@ -34,6 +34,8 @@ export default function GameView({ game, roster, onUpdate, onBack, onRematch, on
   }
 
   const deleteRound = () => {
+    const noun = def.roundNoun.toLowerCase()
+    if (!window.confirm(`Delete this ${noun}? Undo is available for 10 seconds.`)) return
     const rounds = game.rounds.filter((_, i) => i !== sheet.roundIndex)
     onUpdate({ ...game, rounds })
     setSheet(null)
@@ -211,6 +213,8 @@ export default function GameView({ game, roster, onUpdate, onBack, onRematch, on
           <p className="hint">Players added mid-game score 0 for rounds they missed — edit past rounds to backfill.</p>
         </Modal>
       )}
+
+      {undoToast}
     </div>
   )
 }

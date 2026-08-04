@@ -175,6 +175,7 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .data-status { font-size: 13px; margin: 12px 0 0; }
 .data-status.good { color: var(--good); }
 .data-status.bad { color: var(--bad); }
+.data-status.conflict { color: var(--text-dim); }
 .data-head {
   font-size: 13px;
   text-transform: uppercase;
@@ -256,6 +257,26 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .saved-players { display: flex; flex: none; }
 .saved-players .avatar + .avatar { margin-left: -8px; box-shadow: 0 0 0 2px var(--bg-elev); }
 .saved-game .icon-btn { align-self: center; }
+
+.undo-toast {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 10px 12px 10px 16px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+.undo-toast span { flex: 1; min-width: 0; }
+.undo-toast .btn { flex: none; padding: 7px 12px; }
 
 .badge {
   font-size: 10.5px;

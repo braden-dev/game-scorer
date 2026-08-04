@@ -99,6 +99,10 @@ export default function DataPanel({
         </div>
       )}
 
+      {sync?.error && (
+        <p className="data-status conflict" role="status" aria-live="polite">{sync.error}</p>
+      )}
+
       {sync && migrationPending && onPublishMigration && (
         <div className="data-actions">
           <button type="button" className="btn ghost" onClick={doPublishMigration} disabled={publishing}>
