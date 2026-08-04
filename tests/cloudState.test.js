@@ -159,13 +159,13 @@ test('handles malformed and out-of-range timestamps without throwing', () => {
 test('round-trips player versions, player tombstones, and standalone person creation time', () => {
   const state = fromRemoteRows({
     people: [
-      { id: 'p_player', name: 'Player', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'p_player', name: 'Current', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z' },
       { id: 'p_removed', name: 'Removed', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.300Z' },
       { id: 'p_standalone', name: 'Standalone', created_at: '1970-01-01T00:00:00.400Z', updated_at: '1970-01-01T00:00:00.450Z' },
     ],
     games: [{ id: 'g_one', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.500Z', settings: {} }],
     gamePlayers: [
-      { game_id: 'g_one', person_id: 'p_player', seat_order: 0, name_snapshot: 'Player', updated_at: '1970-01-01T00:00:00.250Z' },
+      { game_id: 'g_one', person_id: 'p_player', seat_order: 3, name_snapshot: 'Original', updated_at: '1970-01-01T00:00:00.250Z' },
       { game_id: 'g_one', person_id: 'p_removed', seat_order: 1, name_snapshot: 'Removed Snapshot', updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' },
     ],
     rounds: [],
@@ -182,7 +182,7 @@ test('round-trips player versions, player tombstones, and standalone person crea
   })
   assert.deepEqual(rows.gamePlayers, [
     {
-      game_id: 'g_one', person_id: 'p_player', seat_order: 0, name_snapshot: 'Player',
+      game_id: 'g_one', person_id: 'p_player', seat_order: 3, name_snapshot: 'Original',
       updated_at: '1970-01-01T00:00:00.250Z', deleted_at: null,
     },
     {

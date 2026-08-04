@@ -73,6 +73,35 @@ function withVersion(record, updatedAt) {
   return withTimestamps(record, updatedAt)
 }
 
+function withPlayerMetadata(record, seatOrder, nameSnapshot) {
+  if (seatOrder !== undefined) {
+    Object.defineProperty(record, 'seatOrder', {
+      value: seatOrder,
+      configurable: true,
+      writable: true,
+    })
+  }
+  if (nameSnapshot !== undefined) {
+    Object.defineProperty(record, 'nameSnapshot', {
+      value: nameSnapshot,
+      configurable: true,
+      writable: true,
+    })
+  }
+  return record
+}
+
+function withRoundMetadata(record, roundIndex) {
+  if (roundIndex !== undefined) {
+    Object.defineProperty(record, 'roundIndex', {
+      value: roundIndex,
+      configurable: true,
+      writable: true,
+    })
+  }
+  return record
+}
+
 function tombstoneRecord(row, id, parentId = null) {
   const record = {
     ...(parentId === null ? {} : { gameId: parentId }),
@@ -82,6 +111,7 @@ function tombstoneRecord(row, id, parentId = null) {
   }
   if (row?.seat_order !== undefined) record.seatOrder = row.seat_order
   if (row?.name_snapshot !== undefined) record.nameSnapshot = row.name_snapshot
+  if (row?.round_index !== undefined) record.roundIndex = row.round_index
   return record
 }
 
@@ -98,19 +128,19 @@ function metadataRecords(metadata, key) {
 }
 
 function childPlayerMetadata(player, peopleById) {
-  return withVersion({
+  return withPlayerMetadata(withVersion({
     gameId: player.game_id,
     id: player.person_id,
     name: peopleById.get(player.person_id)?.name ?? player.name_snapshot,
-  }, timestamp(field(player, 'updatedAt', 'updated_at')))
+  }, timestamp(field(player, 'updatedAt', 'updated_at'))), player.seat_order, player.name_snapshot)
 }
 
 function childRoundMetadata(round) {
-  return withVersion({
+  return withRoundMetadata(withVersion({
     gameId: round.game_id,
     id: round.id,
     entries: round.entries ?? {},
-  }, timestamp(field(round, 'updatedAt', 'updated_at')))
+  }, timestamp(field(round, 'updatedAt', 'updated_at'))), round.round_index)
 }
 
 function latestPlayerTombstone(metadata, gameId, personId) {
@@ -191,8 +221,8 @@ export function toRemoteRows(state) {
       return {
         game_id: game.id,
         person_id: player.id,
-        seat_order: seatOrder,
-        name_snapshot: player.name,
+        seat_order: field(deleted, 'seatOrder', 'seat_order') ?? field(player, 'seatOrder', 'seat_order') ?? seatOrder,
+        name_snapshot: field(deleted, 'nameSnapshot', 'name_snapshot') ?? field(player, 'nameSnapshot', 'name_snapshot') ?? player.name,
         updated_at: isoTimestamp(
           deleted ? field(deleted, 'updatedAt', 'updated_at') ?? field(deleted, 'deletedAt', 'deleted_at') : field(player, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
           true,
@@ -216,7 +246,7 @@ export function toRemoteRows(state) {
   const rounds = sourceGames.flatMap((game) => rows(game.rounds).map((round, roundIndex) => ({
     id: round.id,
     game_id: game.id,
-    round_index: roundIndex,
+    round_index: field(round, 'roundIndex', 'round_index') ?? roundIndex,
     entries: round.entries ?? {},
     updated_at: isoTimestamp(
       field(round, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
@@ -259,17 +289,17 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, acti
     const players = (playersByGameId.get(game.id) ?? [])
       .slice()
       .sort((a, b) => (a.seat_order ?? 0) - (b.seat_order ?? 0))
-      .map((player) => withVersion({
+      .map((player) => withPlayerMetadata(withVersion({
         id: player.person_id,
         name: peopleById.get(player.person_id)?.name ?? player.name_snapshot,
-      }, timestamp(field(player, 'updatedAt', 'updated_at'))))
+      }, timestamp(field(player, 'updatedAt', 'updated_at'))), player.seat_order, player.name_snapshot))
     const nestedRounds = (roundsByGameId.get(game.id) ?? [])
       .slice()
       .sort((a, b) => (a.round_index ?? 0) - (b.round_index ?? 0))
-      .map((round) => withVersion(
+      .map((round) => withRoundMetadata(withVersion(
         { id: round.id, entries: round.entries ?? {} },
         timestamp(field(round, 'updatedAt', 'updated_at')),
-      ))
+      ), round.round_index))
 
     return {
       id: game.id,

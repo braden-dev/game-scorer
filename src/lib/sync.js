@@ -175,6 +175,35 @@ function withVersion(record, updatedAt, createdAt = undefined) {
   return record
 }
 
+function withPlayerMetadata(record, seatOrder, nameSnapshot) {
+  if (seatOrder !== undefined) {
+    Object.defineProperty(record, 'seatOrder', {
+      value: seatOrder,
+      configurable: true,
+      writable: true,
+    })
+  }
+  if (nameSnapshot !== undefined) {
+    Object.defineProperty(record, 'nameSnapshot', {
+      value: nameSnapshot,
+      configurable: true,
+      writable: true,
+    })
+  }
+  return record
+}
+
+function withRoundMetadata(record, roundIndex) {
+  if (roundIndex !== undefined) {
+    Object.defineProperty(record, 'roundIndex', {
+      value: roundIndex,
+      configurable: true,
+      writable: true,
+    })
+  }
+  return record
+}
+
 function serializableRecord(record) {
   const serialized = {}
   for (const key of Object.keys(record ?? {})) serialized[key] = clone(record[key])
@@ -185,6 +214,12 @@ function serializableRecord(record) {
   if (createdAt !== undefined) serialized.createdAt = createdAt
   if (updatedAt !== undefined) serialized.updatedAt = updatedAt
   if (deletedAt !== undefined) serialized.deletedAt = deletedAt
+  const seatOrder = recordField(record, 'seatOrder', 'seat_order')
+  const nameSnapshot = recordField(record, 'nameSnapshot', 'name_snapshot')
+  const roundIndex = recordField(record, 'roundIndex', 'round_index')
+  if (seatOrder !== undefined) serialized.seatOrder = seatOrder
+  if (nameSnapshot !== undefined) serialized.nameSnapshot = nameSnapshot
+  if (roundIndex !== undefined) serialized.roundIndex = roundIndex
   return serialized
 }
 
@@ -201,15 +236,18 @@ function cacheVersionEntries(cache) {
       gameId: game.id,
       id: player.id,
       updatedAt: recordField(player, 'updatedAt', 'updated_at'),
+      seatOrder: recordField(player, 'seatOrder', 'seat_order'),
+      nameSnapshot: recordField(player, 'nameSnapshot', 'name_snapshot'),
     }))
-    .filter((player) => player.updatedAt != null))
+    .filter((player) => player.updatedAt != null || player.seatOrder != null || player.nameSnapshot != null))
   const rounds = cache.games.flatMap((game) => (Array.isArray(game.rounds) ? game.rounds : [])
     .map((round) => ({
       gameId: game.id,
       id: round.id,
       updatedAt: recordField(round, 'updatedAt', 'updated_at'),
+      roundIndex: recordField(round, 'roundIndex', 'round_index'),
     }))
-    .filter((round) => round.updatedAt != null))
+    .filter((round) => round.updatedAt != null || round.roundIndex != null))
   return { roster, gamePlayers, rounds }
 }
 
@@ -241,8 +279,13 @@ function restoreCache(cache, serializedMetadata) {
     gamePlayers: Array.isArray(serializedMetadata.gamePlayers) ? clone(serializedMetadata.gamePlayers) : [],
     rounds: Array.isArray(serializedMetadata.rounds) ? clone(serializedMetadata.rounds) : [],
   }
-  for (const record of [...metadata.gamePlayers, ...metadata.rounds]) {
+  for (const record of metadata.gamePlayers) {
     if (record.updatedAt != null) withVersion(record, record.updatedAt)
+    withPlayerMetadata(record, record.seatOrder, record.nameSnapshot)
+  }
+  for (const record of metadata.rounds) {
+    if (record.updatedAt != null) withVersion(record, record.updatedAt)
+    withRoundMetadata(record, record.roundIndex)
   }
   const versions = serializedMetadata.versions ?? {}
 
@@ -253,12 +296,18 @@ function restoreCache(cache, serializedMetadata) {
   for (const entry of Array.isArray(versions.gamePlayers) ? versions.gamePlayers : []) {
     const game = restored.games.find((candidate) => candidate.id === entry.gameId)
     const record = game?.players?.find((player) => player.id === entry.id)
-    if (record && entry.updatedAt != null) withVersion(record, entry.updatedAt)
+    if (record) {
+      if (entry.updatedAt != null) withVersion(record, entry.updatedAt)
+      withPlayerMetadata(record, entry.seatOrder, entry.nameSnapshot)
+    }
   }
   for (const entry of Array.isArray(versions.rounds) ? versions.rounds : []) {
     const game = restored.games.find((candidate) => candidate.id === entry.gameId)
     const record = game?.rounds?.find((round) => round.id === entry.id)
-    if (record && entry.updatedAt != null) withVersion(record, entry.updatedAt)
+    if (record) {
+      if (entry.updatedAt != null) withVersion(record, entry.updatedAt)
+      withRoundMetadata(record, entry.roundIndex)
+    }
   }
 
   return setMetadata(restored, metadata)

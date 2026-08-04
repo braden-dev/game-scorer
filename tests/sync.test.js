@@ -261,14 +261,38 @@ test('applies child-only updates and deletions when the parent game row is absen
     }],
   }
   const update = fromRemoteRows({
-    people: [{ id: 'p_one', name: 'One', updated_at: '1970-01-01T00:00:00.200Z' }],
+    people: [
+      { id: 'p_one', name: 'One', updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'p_new', name: 'Current New', updated_at: '1970-01-01T00:00:00.250Z' },
+    ],
     games: [],
-    gamePlayers: [{ game_id: 'g_incremental', person_id: 'p_one', seat_order: 0, name_snapshot: 'New One', updated_at: '1970-01-01T00:00:00.200Z' }],
-    rounds: [{ id: 'r_one', game_id: 'g_incremental', round_index: 0, entries: { p_one: { score: 2 } }, updated_at: '1970-01-01T00:00:00.200Z' }],
+    gamePlayers: [
+      { game_id: 'g_incremental', person_id: 'p_one', seat_order: 0, name_snapshot: 'New One', updated_at: '1970-01-01T00:00:00.200Z' },
+      { game_id: 'g_incremental', person_id: 'p_new', seat_order: 3, name_snapshot: 'Original New', updated_at: '1970-01-01T00:00:00.250Z' },
+    ],
+    rounds: [
+      { id: 'r_one', game_id: 'g_incremental', round_index: 0, entries: { p_one: { score: 2 } }, updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'r_new', game_id: 'g_incremental', round_index: 4, entries: { p_one: { score: 4 } }, updated_at: '1970-01-01T00:00:00.250Z' },
+    ],
   })
   const updated = mergeRemoteState(local, update, 200)
-  assert.deepEqual(updated.games[0].players, [{ id: 'p_one', name: 'One' }])
-  assert.deepEqual(updated.games[0].rounds, [{ id: 'r_one', entries: { p_one: { score: 2 } } }])
+  assert.deepEqual(updated.games[0].players, [
+    { id: 'p_one', name: 'One' },
+    { id: 'p_new', name: 'Current New' },
+  ])
+  assert.deepEqual(updated.games[0].rounds, [
+    { id: 'r_one', entries: { p_one: { score: 2 } } },
+    { id: 'r_new', entries: { p_one: { score: 4 } } },
+  ])
+  const uploaded = toRemoteRows(updated)
+  assert.deepEqual(uploaded.gamePlayers.find((player) => player.person_id === 'p_new'), {
+    game_id: 'g_incremental', person_id: 'p_new', seat_order: 3, name_snapshot: 'Original New',
+    updated_at: '1970-01-01T00:00:00.250Z', deleted_at: null,
+  })
+  assert.deepEqual(uploaded.rounds.find((round) => round.id === 'r_new'), {
+    id: 'r_new', game_id: 'g_incremental', round_index: 4,
+    entries: { p_one: { score: 4 } }, updated_at: '1970-01-01T00:00:00.250Z', deleted_at: null,
+  })
 
   const deletion = fromRemoteRows({
     people: [],
@@ -277,8 +301,8 @@ test('applies child-only updates and deletions when the parent game row is absen
     rounds: [{ id: 'r_one', game_id: 'g_incremental', round_index: 0, entries: {}, updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' }],
   })
   const deleted = mergeRemoteState(updated, deletion, 300)
-  assert.deepEqual(deleted.games[0].players, [])
-  assert.deepEqual(deleted.games[0].rounds, [])
+  assert.deepEqual(deleted.games[0].players, [{ id: 'p_new', name: 'Current New' }])
+  assert.deepEqual(deleted.games[0].rounds, [{ id: 'r_new', entries: { p_one: { score: 4 } } }])
 })
 
 test('persists cloud child versions and tombstones through a sync-store round trip', () => {
@@ -318,13 +342,13 @@ test('preserves player row versions and tombstones through cache persistence', (
   const storage = new MemoryStorage()
   const state = fromRemoteRows({
     people: [
-      { id: 'p_live', name: 'Live', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'p_live', name: 'Current Live', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z' },
       { id: 'p_removed', name: 'Removed', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.300Z' },
       { id: 'p_standalone', name: 'Standalone', created_at: '1970-01-01T00:00:00.400Z', updated_at: '1970-01-01T00:00:00.450Z' },
     ],
     games: [{ id: 'g_one', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.500Z', settings: {} }],
     gamePlayers: [
-      { game_id: 'g_one', person_id: 'p_live', seat_order: 0, name_snapshot: 'Live', updated_at: '1970-01-01T00:00:00.250Z' },
+      { game_id: 'g_one', person_id: 'p_live', seat_order: 3, name_snapshot: 'Original Live', updated_at: '1970-01-01T00:00:00.250Z' },
       { game_id: 'g_one', person_id: 'p_removed', seat_order: 1, name_snapshot: 'Removed Snapshot', updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' },
     ],
     rounds: [],
@@ -333,6 +357,8 @@ test('preserves player row versions and tombstones through cache persistence', (
   saveSyncStore({ cache: state, outbox: [], lastSyncAt: null, lastError: null, initialMigrationCompleted: false }, storage)
   const rows = toRemoteRows(loadSyncStore(storage).cache)
   assert.equal(rows.gamePlayers[0].updated_at, '1970-01-01T00:00:00.250Z')
+  assert.equal(rows.gamePlayers[0].seat_order, 3)
+  assert.equal(rows.gamePlayers[0].name_snapshot, 'Original Live')
   assert.equal(rows.gamePlayers[1].deleted_at, '1970-01-01T00:00:00.300Z')
   assert.equal(rows.gamePlayers[1].updated_at, '1970-01-01T00:00:00.300Z')
   assert.equal(rows.people.find((person) => person.id === 'p_standalone').created_at, '1970-01-01T00:00:00.400Z')
