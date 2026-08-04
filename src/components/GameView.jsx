@@ -127,7 +127,18 @@ export default function GameView({ game, roster, onUpdate, onBack, onRematch, on
               </thead>
               <tbody>
                 {game.rounds.map((round, i) => (
-                  <tr key={round.id} onClick={() => setSheet({ roundIndex: i, existing: round })} tabIndex={0}>
+                  <tr
+                    key={round.id}
+                    onClick={() => setSheet({ roundIndex: i, existing: round })}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return
+                      event.preventDefault()
+                      setSheet({ roundIndex: i, existing: round })
+                    }}
+                    role="button"
+                    aria-label={`Edit ${def.roundNoun.toLowerCase()} ${i + 1}`}
+                    tabIndex={0}
+                  >
                     <th className="sticky-col">{i + 1}</th>
                     {game.players.map((p) => (
                       <td key={p.id}>

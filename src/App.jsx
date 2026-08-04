@@ -263,7 +263,20 @@ export default function App() {
     const removedRoundIndex = removedRound ? previousGame.rounds.indexOf(removedRound) : -1
     const removedRoundMutationId = removedRound ? uid('m') : null
     const roundTimestamp = Date.now()
-    const gameTimestamp = Math.max(Date.now(), (Number(previousGame?.updatedAt) || 0) + 1)
+    const candidateFinishedAt = status.finished
+      ? (updated.finishedAt || previousGame?.finishedAt || null)
+      : null
+    const parentMetadataChanged = comparableGameMetadata(previousGame) !== comparableGameMetadata({
+      ...updated,
+      finishedAt: candidateFinishedAt,
+    })
+    const includeGame = Boolean(removedRound)
+      || parentMetadataChanged
+      || (status.finished && !previousGame?.finishedAt)
+      || (!status.finished && Boolean(previousGame?.finishedAt))
+    const gameTimestamp = includeGame
+      ? Math.max(roundTimestamp, (Number(previousGame?.updatedAt) || 0) + 1)
+      : previousGame?.updatedAt ?? updated.updatedAt
     const rounds = updated.rounds.map((round) => {
       const previousRound = previousGame?.rounds?.find((candidate) => candidate.id === round.id)
       if (previousRound && comparableRecord(previousRound) === comparableRecord(round)) return round
@@ -280,12 +293,10 @@ export default function App() {
       ...updated,
       rounds,
       updatedAt: gameTimestamp,
-      finishedAt: status.finished ? (updated.finishedAt || gameTimestamp) : null,
+      finishedAt: status.finished ? (updated.finishedAt || previousGame?.finishedAt || gameTimestamp) : null,
     }
     const changedRoundIds = changedRecordIds(previousGame?.rounds ?? [], next.rounds)
     const changedPlayerIds = changedRecordIds(previousGame?.players ?? [], next.players)
-    const includeGame = Boolean(removedRound)
-      || comparableGameMetadata(previousGame) !== comparableGameMetadata(next)
     applyMutation(
       (prev) => ({
         ...prev,

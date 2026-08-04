@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as esbuild from 'esbuild'
 import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
-import { enqueueMutation, loadSyncStore } from '../src/lib/sync.js'
+import { enqueueMutation, loadSyncStore, mergeRemoteState } from '../src/lib/sync.js'
 
 class MemoryStorage {
   #values = new Map()
@@ -313,6 +313,93 @@ test('editing a synced round advances only that round in the queued mutation', a
   assert.equal(mutation.payload.rows.rounds[0].id, 'r_a')
   assert.ok(Date.parse(mutation.payload.rows.rounds[0].updated_at) > 100)
   assert.equal(mutation.payload.rows.rounds[0].entries.p_one.score, 800)
+})
+
+test('score-only round edits preserve remote parent metadata during reconciliation', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.games[0].rounds = [
+    { id: 'r_a', updatedAt: 100, entries: { p_one: { score: 500 }, p_two: { score: 700 } } },
+    { id: 'r_b', updatedAt: 150, entries: { p_one: { score: 300 }, p_two: { score: 100 } } },
+  ]
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({
+    ...game,
+    rounds: [
+      { ...game.rounds[0], entries: { p_one: { score: 800 }, p_two: { score: 700 } } },
+      game.rounds[1],
+    ],
+  })
+
+  const mutation = globalThis.__scorebookTestSync.mutations[0]
+  const localState = mutation.state
+  const localGame = localState.games[0]
+  assert.equal(localGame.updatedAt, state.games[0].updatedAt)
+  assert.deepEqual(mutation.payload.rows.games, [])
+
+  const remoteUpdatedAt = Math.max(state.games[0].updatedAt + 1, localGame.updatedAt - 1)
+  const remoteGame = {
+    ...state.games[0],
+    updatedAt: remoteUpdatedAt,
+    finishedAt: 987654,
+    rounds: [
+      state.games[0].rounds[0],
+      { ...state.games[0].rounds[1], updatedAt: remoteUpdatedAt, entries: { p_one: { score: 900 }, p_two: { score: 100 } } },
+    ],
+  }
+  const remoteState = fromRemoteRows(toRemoteRows({ ...state, games: [remoteGame] }), null)
+  const merged = mergeRemoteState(localState, remoteState)
+
+  assert.equal(merged.games[0].finishedAt, remoteGame.finishedAt)
+  assert.deepEqual(
+    merged.games[0].rounds
+      .map((round) => [round.id, round.entries])
+      .sort(([left], [right]) => left.localeCompare(right)),
+    [
+      ['r_a', localGame.rounds[0].entries],
+      ['r_b', remoteGame.rounds[1].entries],
+    ],
+  )
+})
+
+test('round history rows open the editor with Enter and Space', async () => {
+  const App = await loadComponent('src/App.jsx')
+  prepareStorage(gameState())
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  const gameView = appContent(appTree)
+  globalThis.__scorebookTestReact.reset()
+  globalThis.__scorebookTestReact.begin()
+  let gameTree = gameView.type(gameView.props)
+  const historyRow = findElement(gameTree, (element) => element.type === 'tr' && element.props?.onClick)
+  assert.equal(historyRow.props.role, 'button')
+  assert.equal(historyRow.props['aria-label'], 'Edit turn 1')
+  assert.equal(historyRow.props.tabIndex, 0)
+
+  let prevented = false
+  historyRow.props.onKeyDown({ key: 'Enter', preventDefault: () => { prevented = true } })
+  assert.equal(prevented, true)
+  globalThis.__scorebookTestReact.begin()
+  gameTree = gameView.type(gameView.props)
+  assert.ok(findElement(gameTree, (element) => element.props?.onDelete))
+
+  findElement(gameTree, (element) => element.props?.onClose).props.onClose()
+  globalThis.__scorebookTestReact.begin()
+  gameTree = gameView.type(gameView.props)
+  const closedHistoryRow = findElement(gameTree, (element) => element.type === 'tr' && element.props?.onClick)
+  closedHistoryRow.props.onKeyDown({ key: ' ', preventDefault() {} })
+  globalThis.__scorebookTestReact.begin()
+  gameTree = gameView.type(gameView.props)
+  assert.ok(findElement(gameTree, (element) => element.props?.onDelete))
 })
 
 test('game deletion can be undone before the ten-second window expires', async () => {
