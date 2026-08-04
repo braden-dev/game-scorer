@@ -298,6 +298,77 @@ test('returns explicit outcomes with the requested snapshot mode', async () => {
   }
 })
 
+test('retries an online initial snapshot failure with a steady full-snapshot timer', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const timers = []
+  let snapshotCalls = 0
+  let shouldFail = true
+  const api = {
+    fetchSnapshot: async () => {
+      snapshotCalls += 1
+      if (shouldFail) throw new Error('initial snapshot unavailable')
+      return { people: [], games: [], gamePlayers: [], rounds: [] }
+    },
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  const setState = () => {}
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, setState, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+  const root = createRoot(browser.createContainer())
+  try {
+    globalThis.setTimeout = (callback, delay) => {
+      const timer = { callback: null, delay, cancelled: false, ran: false }
+      timer.callback = () => {
+        timer.ran = true
+        callback()
+      }
+      timers.push(timer)
+      return timer
+    }
+    globalThis.clearTimeout = (timer) => {
+      if (timer) timer.cancelled = true
+    }
+
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+
+    assert.equal(snapshotCalls, 1)
+    assert.equal(timers.length, 1)
+    assert.equal(timers[0].delay, 30_000)
+
+    shouldFail = false
+    timers[0].callback()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    assert.equal(snapshotCalls, 2)
+    assert.equal(timers.filter((timer) => !timer.cancelled && !timer.ran).length, 0)
+
+    shouldFail = true
+    await act(async () => { await observed.hook.syncNow({ initial: true }) })
+    assert.equal(snapshotCalls, 3)
+    assert.equal(timers.filter((timer) => !timer.cancelled && !timer.ran).length, 1)
+    const retryTimer = timers.find((timer) => !timer.cancelled && !timer.ran)
+    assert.equal(retryTimer.delay, 30_000)
+    await act(async () => { root.unmount() })
+    assert.equal(retryTimer.cancelled, true)
+  } finally {
+    await act(async () => { root.unmount() })
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+    browser.restore()
+  }
+})
+
 test('serializes a normal sync before an initial sync and preserves full snapshot results', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
@@ -1068,6 +1139,73 @@ test('rebases a CAS conflict once and preserves the local game and player', asyn
     assert.equal(stored.cache.games[0].players[0].id, 'p_local')
     assert.equal(stored.cache.__cloudMetadata.roster[0].id, 'p_deleted')
     assert.equal(stored.cache.__cloudMetadata.rounds[0].id, 'r_deleted')
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('does not overwrite a row inserted remotely during initial migration', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const remoteWinner = {
+    id: 'p_migration_race',
+    name: 'Remote winner',
+    updated_at: '2026-01-02T00:00:00.000Z',
+    deleted_at: null,
+  }
+  const remoteRows = { people: [], games: [], gamePlayers: [], rounds: [] }
+  const upsertPayloads = []
+  const api = {
+    fetchSnapshot: async () => remoteRows,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async (rows) => {
+      upsertPayloads.push(rows)
+      if (upsertPayloads.length === 1) {
+        remoteRows.people = [remoteWinner]
+        throw new Error('Supabase people: stale mutation; newer remote row exists')
+      }
+      remoteRows.people = rows.people
+      return rows
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_initial_migration_race',
+        entity: 'scorebook',
+        operation: 'upsert',
+        initialMigration: true,
+        payload: {
+          rows: {
+            people: [{ ...remoteWinner, name: 'Stale local', updated_at: '2026-01-01T00:00:00.000Z' }],
+            games: [],
+            gamePlayers: [],
+            rounds: [],
+          },
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(upsertPayloads.length, 1)
+    assert.deepEqual(remoteRows.people, [remoteWinner])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()

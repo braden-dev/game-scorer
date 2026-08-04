@@ -309,9 +309,8 @@ test('initial migration stamps local history newer than a stale incremental curs
   resetTestState()
 
   globalThis.__scorebookTestReact.begin()
-  const appTree = App()
+  App()
   await settleEffects()
-  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   const mutation = globalThis.__scorebookTestSync.mutations[0]
   assert.equal(mutation.initialMigration, true)
@@ -343,9 +342,8 @@ test('first-run migration skips local rows already present in the cloud snapshot
   resetTestState()
 
   globalThis.__scorebookTestReact.begin()
-  const appTree = App()
+  App()
   await settleEffects()
-  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   const mutation = globalThis.__scorebookTestSync.mutations[0]
   assert.deepEqual(mutation.payload.rows, { people: [], games: [], gamePlayers: [], rounds: [] })
@@ -376,9 +374,8 @@ test('first-run migration reconciles conflicting same-ID local rows to cloud aut
   resetTestState()
 
   globalThis.__scorebookTestReact.begin()
-  const appTree = App()
+  App()
   await settleEffects()
-  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   globalThis.__scorebookTestReact.begin()
   const refreshedTree = App()

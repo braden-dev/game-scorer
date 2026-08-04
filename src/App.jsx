@@ -120,7 +120,6 @@ export default function App() {
   )
   const stateRef = useRef(state)
   const migrationStartedRef = useRef(false)
-  const migrationEnqueuedRef = useRef(loadSyncStore().outbox.some((mutation) => mutation.initialMigration))
   const migrationRetryBlockedRef = useRef(null)
   const undoRef = useRef(null)
   const [undoAction, setUndoAction] = useState(null)
@@ -593,7 +592,6 @@ export default function App() {
         },
       }),
     )
-    migrationEnqueuedRef.current = true
     await sync.syncNow()
     const store = loadSyncStore()
     if (store.outbox.some((mutation) => mutation.id === migrationId)) {
@@ -603,14 +601,6 @@ export default function App() {
     sync.updateSyncStore({ initialMigrationCompleted: true })
     setInitialMigrationCompleted(true)
   }
-
-  useEffect(() => {
-    if (!migrationEnqueuedRef.current || initialMigrationCompleted) return
-    const store = loadSyncStore()
-    if (store.outbox.some((mutation) => mutation.initialMigration)) return
-    sync.updateSyncStore({ initialMigrationCompleted: true })
-    setInitialMigrationCompleted(true)
-  }, [initialMigrationCompleted, sync.pendingCount, sync.updateSyncStore])
 
   useEffect(() => {
     const store = loadSyncStore()

@@ -493,9 +493,11 @@ export function enqueueMutation(store, mutation) {
 
 export function removeMutation(store, mutationId) {
   const normalized = normalizeStore(store)
+  const removedMutation = normalized.outbox.find((mutation) => mutation?.id === mutationId)
   return {
     ...normalized,
     outbox: normalized.outbox.filter((mutation) => mutation?.id !== mutationId),
+    initialMigrationCompleted: normalized.initialMigrationCompleted || Boolean(removedMutation?.initialMigration),
   }
 }
 

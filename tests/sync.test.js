@@ -81,6 +81,21 @@ test('enqueues and removes mutations without mutating inputs or duplicating IDs'
   assert.deepEqual(next.outbox, [mutation])
 })
 
+test('marks initial migration completion when the successful migration is removed', () => {
+  const store = loadSyncStore(new MemoryStorage())
+  const migration = enqueueMutation(store, {
+    id: 'm_initial',
+    entity: 'scorebook',
+    operation: 'upsert',
+    initialMigration: true,
+    payload: { rows: {} },
+  })
+
+  assert.equal(removeMutation(migration, 'm_initial').initialMigrationCompleted, true)
+  const normal = enqueueMutation(store, { id: 'm_normal' })
+  assert.equal(removeMutation(normal, 'm_normal').initialMigrationCompleted, false)
+})
+
 test('enqueues a round delete with parent and payload metadata', () => {
   const store = {
     cache: {

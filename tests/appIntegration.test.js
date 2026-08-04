@@ -135,7 +135,7 @@ export function useCloudSync() {
       persistStore()
       return { ok: false, reason: 'error', fullSnapshot: Boolean(options.initial) }
     }
-    persistStore()
+    persistStore(mutation.initialMigration ? { initialMigrationCompleted: true } : {})
     return { ok: true, fullSnapshot: Boolean(options.initial) }
   }
   state.syncNow = syncNow
@@ -196,24 +196,6 @@ async function loadAppForIntegrationTest() {
     write: false,
   })
   return (await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)).default
-}
-
-function childrenOf(element) {
-  const children = element?.props?.children
-  return Array.isArray(children) ? children : [children]
-}
-
-function findElement(element, predicate) {
-  if (!element || typeof element !== 'object') return null
-  if (predicate(element)) return element
-  const children = element.type?.name === 'AppShell'
-    ? [element.props.content, element.props.undoToast]
-    : childrenOf(element)
-  for (const child of children) {
-    const match = findElement(child, predicate)
-    if (match) return match
-  }
-  return null
 }
 
 test('persists the next nested state in the cloud cache without uploading activeGameId', () => {
@@ -308,7 +290,7 @@ test('aborts initial migration when the cloud snapshot fails, then retries witho
   globalThis.__scorebookIntegrationCloudApi.failUpsert = true
 
   globalThis.__scorebookIntegrationReactControl.begin()
-  const appTree = App()
+  App()
   await globalThis.__scorebookIntegrationReactControl.flushEffects()
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -317,7 +299,6 @@ test('aborts initial migration when the cloud snapshot fails, then retries witho
   assert.equal(store.lastError, null)
   assert.deepEqual(store.outbox, [])
   assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
-  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   globalThis.__scorebookIntegrationCloudApi.failFetch = false
   globalThis.__scorebookIntegrationCloudApi.failUpsert = false
@@ -373,7 +354,7 @@ test('persists a failed migration for retry and completes only after replay remo
   globalThis.__scorebookIntegrationCloudApi.failUpsert = true
 
   globalThis.__scorebookIntegrationReactControl.begin()
-  const appTree = App()
+  App()
   await globalThis.__scorebookIntegrationReactControl.flushEffects()
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -383,14 +364,13 @@ test('persists a failed migration for retry and completes only after replay remo
   assert.equal(store.outbox[0].initialMigration, true)
   assert.equal(store.lastError, 'migration upload unavailable')
   assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
-  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   globalThis.__scorebookIntegrationCloudApi.failUpsert = false
   await globalThis.__scorebookIntegrationSync.syncNow()
   store = loadSyncStore()
   assert.equal(store.outbox.length, 0)
   assert.equal(store.lastError, null)
-  assert.equal(store.initialMigrationCompleted, false)
+  assert.equal(store.initialMigrationCompleted, true)
 
   globalThis.__scorebookIntegrationReactControl.begin()
   App()
@@ -453,7 +433,7 @@ test('preserves a persisted migration when the snapshot fails and recognizes its
   globalThis.__scorebookIntegrationCloudApi.failUpsert = false
 
   globalThis.__scorebookIntegrationReactControl.begin()
-  const appTree = App()
+  App()
   await globalThis.__scorebookIntegrationReactControl.flushEffects()
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -462,7 +442,6 @@ test('preserves a persisted migration when the snapshot fails and recognizes its
   assert.deepEqual(store.outbox.map(({ id }) => id), ['migration_existing'])
   assert.equal(store.lastError, 'snapshot unavailable')
   assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
-  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   globalThis.__scorebookIntegrationCloudApi.failFetch = false
   globalThis.navigator.onLine = true

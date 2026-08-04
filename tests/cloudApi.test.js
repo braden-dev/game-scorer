@@ -749,6 +749,55 @@ test('restores a matching tombstone with its server version despite a newer trig
   ])
 })
 
+test('compares restore tombstone timestamps semantically while retaining conflicts for different values', async () => {
+  const deletedAt = '2026-01-02T00:00:00.123Z'
+  const serverAt = '2026-01-02T00:00:01.123Z'
+  const restoreAt = '2026-01-02T00:00:02.000Z'
+  const client = mutableClient({
+    rounds: [{
+      id: 'r_restore_format', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+      updated_at: serverAt, deleted_at: deletedAt,
+    }],
+  })
+  const formattedTombstone = {
+    id: 'r_restore_format',
+    game_id: 'g_restore',
+    updated_at: '2026-01-02 00:00:01.123456+00:00',
+    deleted_at: '2026-01-02 00:00:00.123456+00:00',
+  }
+
+  const result = await createCloudApi(client).restoreRows({
+    rounds: [{
+      id: 'r_restore_format', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+      updated_at: restoreAt, deleted_at: null,
+    }],
+  }, { rounds: [formattedTombstone] })
+
+  assert.equal(result.rounds[0].deleted_at, null)
+
+  const changedTimestampClient = mutableClient({
+    rounds: [{
+      id: 'r_restore_format_conflict', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+      updated_at: serverAt, deleted_at: deletedAt,
+    }],
+  })
+  await assert.rejects(
+    createCloudApi(changedTimestampClient).restoreRows({
+      rounds: [{
+        id: 'r_restore_format_conflict', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+        updated_at: restoreAt, deleted_at: null,
+      }],
+    }, {
+      rounds: [{
+        ...formattedTombstone,
+        id: 'r_restore_format_conflict',
+        updated_at: '2026-01-02 00:00:01.124456+00:00',
+      }],
+    }),
+    /rounds.*newer remote row/,
+  )
+})
+
 test('restores game and composite player tombstones through the same conditional path', async () => {
   const deletedAt = '2026-01-02T00:00:00.000Z'
   const serverAt = '2026-01-02T00:00:01.000Z'

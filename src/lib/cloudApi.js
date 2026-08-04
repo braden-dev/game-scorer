@@ -229,23 +229,25 @@ async function restoreRow(client, definition, row, expectedTombstone) {
   const existingVersion = rowVersion(existing)
   assertValidVersion(definition.table, existingVersion)
 
-  if (timestamp(existing.deleted_at) === null) {
+  const existingDeletedAt = canonicalTimestamp(existing.deleted_at)
+  if (existingDeletedAt === null) {
     if (sameRestorePayload(existing, row)) return existing
     throw conflictError(definition.table)
   }
 
-  const expectedDeletedAt = timestamp(rowValue(expectedTombstone, 'deleted_at'))
-  const expectedUpdatedAt = timestamp(rowValue(expectedTombstone, 'updated_at'))
+  const existingUpdatedAt = canonicalTimestamp(existing.updated_at)
+  const expectedDeletedAt = canonicalTimestamp(rowValue(expectedTombstone, 'deleted_at'))
+  const expectedUpdatedAt = canonicalTimestamp(rowValue(expectedTombstone, 'updated_at'))
   if (expectedDeletedAt === null || expectedUpdatedAt === null) throw conflictError(definition.table)
-  if (timestamp(existing.deleted_at) !== expectedDeletedAt
-    || timestamp(existing.updated_at) !== expectedUpdatedAt
+  if (existingDeletedAt !== expectedDeletedAt
+    || existingUpdatedAt !== expectedUpdatedAt
     || !sameRestorePayload(existing, row)) {
     throw conflictError(definition.table)
   }
 
   let query = keyFilters(client.from(definition.table).update({ ...row, deleted_at: null }), definition, row)
-  query = query.eq('deleted_at', rowValue(expectedTombstone, 'deleted_at'))
-  query = query.eq('updated_at', rowValue(expectedTombstone, 'updated_at'))
+  query = query.eq('deleted_at', existing.deleted_at)
+  query = query.eq('updated_at', existing.updated_at)
   const data = await checkedWrite(query.select('*'), definition.table, 'restore')
   return Array.isArray(data) ? data[0] ?? existing : data ?? existing
 }

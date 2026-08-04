@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cloudConfigured, supabase } from './supabase.js'
 import { createCloudApi } from './cloudApi.js'
-import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, hasCloudMetadata, mergeCloudCache, toRemoteRows } from './cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, filterRowsAlreadyInCloud, fromRemoteRows, hasCloudMetadata, mergeCloudCache, toRemoteRows } from './cloudState.js'
 import {
   conservativeSyncCursor,
   activeGameIdForSync,
@@ -173,6 +173,18 @@ function rebaseMutation(mutation) {
   return rebased
 }
 
+function filterInitialMigrationMutation(mutation, remoteRows) {
+  const rows = filterRowsAlreadyInCloud(rowsForMutation(mutation), remoteRows)
+  const payload = mutation?.payload?.rows && typeof mutation.payload.rows === 'object'
+    ? { ...mutation.payload, rows }
+    : rows
+  return { ...mutation, payload }
+}
+
+function hasRows(rows) {
+  return REMOTE_KEYS.some((key) => Array.isArray(rows?.[key]) && rows[key].length > 0)
+}
+
 function canRebaseMutation(mutation) {
   return mutation?.operation === 'upsert' && Number(mutation.conflictAttempts ?? 0) < 1
 }
@@ -275,6 +287,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   const syncNowRef = useRef(null)
   const retryTimerRef = useRef(null)
   const retryAttemptsRef = useRef(0)
+  const initialRetryTimerRef = useRef(null)
   const apiRef = useRef(dependencies.api ?? (configured ? createCloudApi(supabase) : null))
 
   const clearRetry = () => {
@@ -298,6 +311,19 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       retryTimerRef.current = null
       if (mountedRef.current) void syncNowRef.current?.()
     }, delay)
+  }, [])
+
+  const clearInitialRetry = useCallback(() => {
+    if (initialRetryTimerRef.current) clearTimeout(initialRetryTimerRef.current)
+    initialRetryTimerRef.current = null
+  }, [])
+
+  const scheduleInitialRetry = useCallback(() => {
+    if (!mountedRef.current || !online() || initialRetryTimerRef.current) return
+    initialRetryTimerRef.current = setTimeout(() => {
+      initialRetryTimerRef.current = null
+      if (mountedRef.current) void syncNowRef.current?.({ initial: true })
+    }, RETRY_STEADY_DELAY_MS)
   }, [])
 
   useEffect(() => {
@@ -364,6 +390,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     }
 
     let store = storeRef.current ?? loadSyncStore()
+    const fullSnapshot = initial || !store.lastSyncAt
     const syncStartedAt = new Date().toISOString()
     const syncCursor = conservativeSyncCursor(store.lastSyncAt, syncStartedAt)
     const previousSyncAt = store.lastSyncAt
@@ -381,6 +408,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       || store.outbox.some((mutation) => Number(mutation.conflictAttempts ?? 0) > 0)
       || store.lastError === CONFLICT_MESSAGE
       || store.lastError === TERMINAL_CONFLICT_MESSAGE
+    let snapshotSucceeded = false
     if (store.outbox.some((mutation) => isReplayableMutation(mutation) && isSoftDeleteMutation(mutation))) {
       stateRef.current = baseCache
       if (mountedRef.current) setState(baseCache)
@@ -391,9 +419,10 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     }
 
     try {
-      const rows = initial || !store.lastSyncAt
+      const rows = fullSnapshot
         ? await apiRef.current.fetchSnapshot()
         : await apiRef.current.fetchRowsUpdatedSince(store.lastSyncAt)
+      snapshotSucceeded = true
       const latestStore = storeRef.current ?? store
       const latestActiveGameId = activeGameIdForSync(stateRef, latestStore)
       const latestCache = applyPendingSoftDeletes(
@@ -446,15 +475,33 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
             ...mergedConflictState,
             activeGameId: latestActiveGameId,
           }, mergedConflictState)
-          const conflictedMutation = canRebaseMutation(mutation)
-            ? rebaseMutation(mutation)
-            : {
-              ...mutation,
-              status: 'conflict',
-              error: TERMINAL_CONFLICT_MESSAGE,
-              conflictedAt: new Date().toISOString(),
-            }
-          conflictMessage = canRebaseMutation(mutation) ? CONFLICT_MESSAGE : TERMINAL_CONFLICT_MESSAGE
+          const initialMigrationConflict = mutation.initialMigration && mutation.operation === 'upsert'
+          const additiveMigration = initialMigrationConflict
+            ? filterInitialMigrationMutation(mutation, refreshedRows)
+            : null
+          const conflictedMutation = initialMigrationConflict
+            ? additiveMigration
+            : canRebaseMutation(mutation)
+              ? rebaseMutation(mutation)
+              : {
+                ...mutation,
+                status: 'conflict',
+                error: TERMINAL_CONFLICT_MESSAGE,
+                conflictedAt: new Date().toISOString(),
+              }
+          conflictMessage = initialMigrationConflict || canRebaseMutation(mutation)
+            ? CONFLICT_MESSAGE
+            : TERMINAL_CONFLICT_MESSAGE
+          if (initialMigrationConflict && !hasRows(rowsForMutation(additiveMigration))) {
+            store = commitStore({
+              ...removeMutation(latestStoreAfterConflict, mutation.id),
+              cache: refreshedCache,
+              reconciledCache: copyCloudMetadata({ ...remoteState, activeGameId: latestActiveGameId }, remoteState),
+            }, [mutation.id])
+            stateRef.current = refreshedCache
+            if (mountedRef.current) setState(refreshedCache)
+            continue
+          }
           store = commitStore({
             ...latestStoreAfterConflict,
             outbox: latestStoreAfterConflict.outbox.map((queued) => (
@@ -516,6 +563,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         if (mountedRef.current) setState(store.cache)
       }
       const pendingAfterReplay = store.outbox.some(isReplayableMutation)
+      if (fullSnapshot) clearInitialRetry()
       clearRetry()
       if (mountedRef.current) {
         setError(finalConflictMessage)
@@ -535,10 +583,11 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         setError(errorMessage)
         setStatus(online() ? 'error' : 'offline')
       }
-      scheduleRetry()
+      if (fullSnapshot && !snapshotSucceeded) scheduleInitialRetry()
+      else scheduleRetry()
       return { ok: false, reason: 'error', fullSnapshot: initial }
     }
-  }, [configured, publishStore, replayMutation, scheduleRetry, setState])
+  }, [clearInitialRetry, configured, publishStore, replayMutation, scheduleInitialRetry, scheduleRetry, setState])
 
   const syncNow = useCallback((options) => {
     if (!syncRunnerRef.current) syncRunnerRef.current = createSyncRunner(runSync)
@@ -576,6 +625,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     if (!configured) return () => {
       mountedRef.current = false
       clearRetry()
+      clearInitialRetry()
     }
 
     const store = loadSyncStore()
@@ -606,8 +656,9 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       mountedRef.current = false
       removeListeners()
       clearRetry()
+      clearInitialRetry()
     }
-  }, [configured, publishStore, setState, syncNow])
+  }, [clearInitialRetry, configured, publishStore, setState, syncNow])
 
   return { status, pendingCount, error, syncNow, enqueueStateMutation, updateSyncStore, cancelSyncMutations }
 }
