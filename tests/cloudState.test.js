@@ -6,7 +6,7 @@ test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
 })
 
-test('converts nested state into timestamped remote rows', () => {
+test('converts nested state into timestamped remote rows with ISO timestamps', () => {
   const state = {
     roster: [{ id: 'p_john', name: ' John ' }],
     games: [{
@@ -56,6 +56,10 @@ test('converts nested state into timestamped remote rows', () => {
       deleted_at: null,
     }],
   })
+
+  const rows = toRemoteRows(state)
+  assert.equal(typeof rows.games[0].created_at, 'string')
+  assert.equal(rows.games[0].updated_at, '1970-01-01T00:00:00.200Z')
 })
 
 test('reconstructs nested state, resolves names, converts timestamps, and filters tombstones', () => {

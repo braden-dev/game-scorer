@@ -228,7 +228,11 @@ test('converts a nested game into people, game, join, and round rows', () => {
   }
 
   const rows = toRemoteRows(state)
-  assert.deepEqual(rows.people[0], { id: 'p_john', name: 'John', normalized_name: 'john', created_at: 100, updated_at: 200, deleted_at: null })
+  assert.deepEqual(rows.people[0], {
+    id: 'p_john', name: 'John', normalized_name: 'john',
+    created_at: '1970-01-01T00:00:00.100Z',
+    updated_at: '1970-01-01T00:00:00.200Z', deleted_at: null,
+  })
   assert.equal(rows.games[0].id, 'g_one')
   assert.equal(rows.gamePlayers[0].person_id, 'p_john')
   assert.deepEqual(rows.rounds[0].entries, { p_john: { score: 500 } })
@@ -262,7 +266,7 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds }, activeGam
 }
 ```
 
-Use client IDs unchanged, convert millisecond timestamps to ISO strings on upload, convert them back to milliseconds on download, resolve current person names through `people`, and keep a game's `name_snapshot` as fallback.
+Use client IDs unchanged, convert millisecond timestamps to ISO strings on upload for the SQL `timestamptz` columns, convert them back to milliseconds on download, resolve current person names through `people`, and keep a game's `name_snapshot` as fallback.
 
 - [ ] **Step 4: Write failing outbox tests**
 
