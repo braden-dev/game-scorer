@@ -130,7 +130,7 @@ function postgrestFilterValue(value) {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
     throw new Error('Cannot paginate after a row with an unsupported order key')
   }
-  if (!/[,()"\\]/.test(serialized) && serialized === serialized.trim() && serialized !== '') return serialized
+  if (/^[A-Za-z0-9_-]+$/.test(serialized)) return serialized
   return `"${serialized.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
 }
 

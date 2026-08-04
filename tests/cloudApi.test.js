@@ -620,19 +620,20 @@ test('does not skip rows when a mutable table changes before the next keyset pag
 })
 
 test('uses escaped lexicographic filters for composite game player keys', async () => {
+  const reservedGameId = 'g1.:,()"\\ spaced'
   const gamePlayers = [
     ...Array.from({ length: 999 }, (_, index) => ({
-      game_id: 'g1',
+      game_id: reservedGameId,
       person_id: `p${String(index).padStart(4, '0')}`,
       updated_at: '2026-01-01T00:00:00.000Z',
     })),
-    { game_id: 'g1', person_id: 'p0999,(x)', updated_at: '2026-01-01T00:00:00.000Z' },
+    { game_id: reservedGameId, person_id: 'p0999.:', updated_at: '2026-01-01T00:00:00.000Z' },
     { game_id: 'g2', person_id: 'p0000', updated_at: '2026-01-01T00:00:00.000Z' },
   ]
   const client = mutableClient({ game_players: gamePlayers }, {
     beforeRead(table, readNumber, tableRows) {
       if (table !== 'game_players' || readNumber !== 1) return
-      tableRows.splice(tableRows.findIndex(({ game_id, person_id }) => game_id === 'g1' && person_id === 'p0000'), 1)
+      tableRows.splice(tableRows.findIndex(({ game_id, person_id }) => game_id === reservedGameId && person_id === 'p0000'), 1)
       tableRows.push({ game_id: 'g2', person_id: 'p0001', updated_at: '2026-01-01T00:00:00.000Z' })
     },
   })
@@ -647,7 +648,7 @@ test('uses escaped lexicographic filters for composite game player keys', async 
   assert.deepEqual(client.calls.filter((call) => call.operation === 'or'), [{
     table: 'game_players',
     operation: 'or',
-    value: 'game_id.gt.g1,and(game_id.eq.g1,person_id.gt."p0999,(x)")',
+    value: 'game_id.gt."g1.:,()\\"\\\\ spaced",and(game_id.eq."g1.:,()\\"\\\\ spaced",person_id.gt."p0999.:")',
   }])
 })
 
