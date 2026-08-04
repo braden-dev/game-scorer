@@ -38,6 +38,30 @@ async function loadPeople() {
   return (await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)).default
 }
 
+async function loadMigrationPanel() {
+  const plugin = {
+    name: 'scorebook-migration-panel-test-aliases',
+    setup(build) {
+      build.onResolve({ filter: /^react$/ }, () => ({ path: 'react', namespace: 'scorebook-test' }))
+      build.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: 'react/jsx-runtime', namespace: 'scorebook-test' }))
+      build.onLoad({ filter: /.*/, namespace: 'scorebook-test' }, () => ({
+        contents: fakeReact,
+        loader: 'js',
+      }))
+    },
+  }
+  const result = await esbuild.build({
+    entryPoints: ['src/components/MigrationPanel.jsx'],
+    bundle: true,
+    format: 'esm',
+    jsx: 'automatic',
+    platform: 'node',
+    plugins: [plugin],
+    write: false,
+  })
+  return (await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)).default
+}
+
 function childrenOf(element) {
   const children = element?.props?.children
   return Array.isArray(children) ? children : [children]
@@ -92,4 +116,24 @@ test('global sync notice reserves normal flow space instead of overlaying contro
   assert.ok(notice)
   assert.doesNotMatch(notice, /position:\s*fixed/)
   assert.match(notice, /margin:/)
+})
+
+test('MigrationPanel reports skipped unsupported games before publish', async () => {
+  const MigrationPanel = await loadMigrationPanel()
+  const tree = MigrationPanel({
+    state: {
+      roster: [{ id: 'p_roster', name: 'Roster Player' }],
+      games: [{
+        id: 'g_supported', gameId: 'farkle', players: [], rounds: [], settings: {},
+      }, {
+        id: 'g_future', gameId: 'future-game', players: [], rounds: [], settings: {},
+      }],
+    },
+    onPublish: () => {},
+    onKeepLocal: () => {},
+  })
+
+  const notice = findElement(tree, (element) => element.props?.role === 'status')
+  assert.ok(notice)
+  assert.match(textOf(notice), /Skipping\s+1\s+unsupported\s+game/)
 })

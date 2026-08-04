@@ -535,6 +535,19 @@ export default function App() {
           payload: { rows: toRemoteRows(nextState) },
         }),
       )
+    } else {
+      sync.updateSyncStore((store) => ({
+        ...store,
+        lastError: null,
+        outbox: store.outbox.map((mutation) => {
+          if (mutation.id !== migrationId) return mutation
+          const refreshed = { ...mutation, payload: { rows: toRemoteRows(stateRef.current) } }
+          delete refreshed.status
+          delete refreshed.error
+          delete refreshed.conflictedAt
+          return refreshed
+        }),
+      }))
     }
     await sync.syncNow()
     const store = loadSyncStore()

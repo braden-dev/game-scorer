@@ -41,3 +41,15 @@ test('round position uniqueness excludes tombstones but rejects duplicate live r
     /duplicate live round position/,
   )
 })
+
+test('migration validation command includes linked lint and transactional local SQL checks', () => {
+  const validationScript = fs.readFileSync(
+    path.resolve(path.dirname(migrationPath), '../../scripts/validate-migration.mjs'),
+    'utf8',
+  )
+
+  assert.match(validationScript, /\['db', 'lint', '--linked'\]/)
+  assert.match(validationScript, /Run the migration twice in one transaction/)
+  assert.match(validationScript, /ROLLBACK;/)
+  assert.match(validationScript, /live\/tombstone round-index behavior/)
+})

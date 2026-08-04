@@ -113,7 +113,59 @@ test('migration counts match deduplicated published people, including historical
     ],
   }
 
-  assert.deepEqual(migrationCounts(state), { games: 2, rounds: 1, people: 2 })
+  assert.deepEqual(migrationCounts(state), { games: 2, rounds: 1, people: 2, skippedGames: 0 })
+})
+
+test('migration skips unsupported games while retaining roster and supported-game players', () => {
+  const state = {
+    roster: [{ id: 'p_roster', name: 'Roster Player' }],
+    games: [
+      {
+        id: 'g_supported',
+        gameId: 'farkle',
+        createdAt: 100,
+        updatedAt: 200,
+        players: [{ id: 'p_supported', name: 'Supported Player' }],
+        settings: {},
+        rounds: [{ id: 'r_supported', entries: {} }],
+        finishedAt: null,
+      },
+      {
+        id: 'g_future',
+        gameId: 'future-game',
+        createdAt: 300,
+        updatedAt: 400,
+        players: [{ id: 'p_future', name: 'Future Player' }],
+        settings: {},
+        rounds: [{ id: 'r_future', entries: {} }],
+        finishedAt: null,
+      },
+    ],
+  }
+
+  const rows = toRemoteRows(state)
+  assert.deepEqual(rows.games.map(({ id, game_id }) => [id, game_id]), [['g_supported', 'farkle']])
+  assert.deepEqual(rows.gamePlayers.map(({ game_id, person_id }) => [game_id, person_id]), [['g_supported', 'p_supported']])
+  assert.deepEqual(rows.rounds.map(({ game_id, id }) => [game_id, id]), [['g_supported', 'r_supported']])
+  assert.deepEqual(rows.people.map(({ id }) => id), ['p_roster', 'p_supported'])
+  assert.deepEqual(migrationCounts(state), { games: 1, rounds: 1, people: 2, skippedGames: 1 })
+})
+
+test('migration omits unsupported game tombstones from cloud rows', () => {
+  const state = fromRemoteRows({
+    people: [],
+    games: [{
+      id: 'g_future_deleted',
+      game_id: 'future-game',
+      updated_at: '2026-01-02T00:00:00.000Z',
+      deleted_at: '2026-01-03T00:00:00.000Z',
+      settings: {},
+    }],
+    gamePlayers: [],
+    rounds: [],
+  })
+
+  assert.deepEqual(toRemoteRows(state), { people: [], games: [], gamePlayers: [], rounds: [] })
 })
 
 test('delta rows exclude unchanged local history from later normal mutations', () => {
@@ -341,7 +393,7 @@ test('round-trips metadata-only person and game tombstones without duplicating l
         updated_at: '2026-01-02T00:00:00.000Z', finished_at: null, settings: { target: 100 }, deleted_at: null,
       },
       {
-        id: 'g_deleted', game_id: 'yahtzee', created_at: '2026-01-01T00:00:00.000Z',
+        id: 'g_deleted', game_id: 'dutch-blitz', created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-03T00:00:00.000Z', finished_at: '2026-01-03T00:00:01.000Z',
         settings: { target: 50 }, deleted_at: '2026-01-03T00:00:00.000Z',
       },

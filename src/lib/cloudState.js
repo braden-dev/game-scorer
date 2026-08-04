@@ -2,6 +2,7 @@ const EPOCH_ISO = new Date(0).toISOString()
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
 const ROUND_POSITION_OVERRIDE = Symbol('gamescorer.roundPositionOverride')
 const PLAYER_POSITION_OVERRIDE = Symbol('gamescorer.playerPositionOverride')
+const SUPPORTED_GAME_IDS = new Set(['farkle', 'dutch-blitz', 'three-thirteen'])
 
 function rows(value) {
   return Array.isArray(value) ? value : []
@@ -49,6 +50,10 @@ function validMilliseconds(milliseconds) {
 
 function isTombstone(row) {
   return field(row, 'deletedAt', 'deleted_at') != null
+}
+
+function isSupportedGame(game) {
+  return SUPPORTED_GAME_IDS.has(field(game, 'gameId', 'game_id'))
 }
 
 function withTimestamps(record, updatedAt, createdAt = undefined) {
@@ -380,7 +385,7 @@ function addPersonCandidate(candidates, candidate) {
 
 export function toRemoteRows(state) {
   const roster = rows(state?.roster)
-  const sourceGames = rows(state?.games)
+  const sourceGames = rows(state?.games).filter(isSupportedGame)
   const metadata = state?.[CLOUD_METADATA] ?? {}
   const personCandidates = new Map()
   for (const person of roster) {
@@ -416,7 +421,7 @@ export function toRemoteRows(state) {
     deleted_at: isoTimestamp(field(game, 'deletedAt', 'deleted_at')),
   }))
   const deletedGames = metadataRecords(metadata, 'games')
-    .filter((game) => isTombstone(game) && !liveGameIds.has(game.id))
+    .filter((game) => isTombstone(game) && isSupportedGame(game) && !liveGameIds.has(game.id))
     .map((game) => ({
       id: game.id,
       game_id: field(game, 'gameId', 'game_id') ?? null,
@@ -541,12 +546,14 @@ export function toRemoteRows(state) {
 }
 
 export function migrationCounts(state) {
-  const games = rows(state?.games)
+  const allGames = rows(state?.games)
+  const games = allGames.filter(isSupportedGame)
   const remoteRows = toRemoteRows(state)
   return {
     games: games.length,
-    rounds: games.reduce((sum, game) => sum + rows(game.rounds).length, 0),
+    rounds: remoteRows.rounds.length,
     people: remoteRows.people.length,
+    skippedGames: allGames.length - games.length,
   }
 }
 
@@ -555,6 +562,7 @@ export function toRemoteRowsDelta(state, previousState = {}, options = {}) {
   const previousPeople = new Map(rows(previousState.roster).map((person) => [person.id, person]))
   const changedGames = rows(state?.games)
     .filter((game) => previousGames.get(game.id) !== game)
+    .filter(isSupportedGame)
     .map((game) => {
       if (options.gameId !== game.id) return game
       const scoped = { ...game }

@@ -4,7 +4,12 @@ import { migrationCounts } from '../lib/cloudState.js'
 export default function MigrationPanel({ state, onPublish, onKeepLocal }) {
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState(null)
-  const { games: gameCount, rounds: roundCount, people: peopleCount } = migrationCounts(state)
+  const {
+    games: gameCount,
+    rounds: roundCount,
+    people: peopleCount,
+    skippedGames: skippedGameCount,
+  } = migrationCounts(state)
 
   const publish = async () => {
     setPublishing(true)
@@ -30,6 +35,12 @@ export default function MigrationPanel({ state, onPublish, onKeepLocal }) {
       <p className="hint">
         The shared scorebook is public and editable. Your existing JSON backup will not be changed.
       </p>
+      {skippedGameCount > 0 && (
+        <p className="hint" role="status" aria-live="polite">
+          Skipping <strong>{skippedGameCount}</strong> unsupported game{skippedGameCount === 1 ? '' : 's'}.
+          Supported games are Farkle, Dutch Blitz, and Three Thirteen; keep the JSON backup for other history.
+        </p>
+      )}
       <div className="data-actions">
         <button type="button" className="btn primary" onClick={publish} disabled={publishing} aria-busy={publishing}>
           Publish to shared scorebook
