@@ -559,7 +559,9 @@ export function toRemoteRowsDelta(state, previousState = {}, options = {}) {
       .map((person) => [person.id, person]),
   ).values()]
 
-  return toRemoteRows({ ...state, games: changedGames, roster: people })
+  const remoteRows = toRemoteRows({ ...state, games: changedGames, roster: people })
+  if (options.includeGame === false) remoteRows.games = []
+  return remoteRows
 }
 
 export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, activeGameId = null) {

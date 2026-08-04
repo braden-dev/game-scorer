@@ -4,7 +4,7 @@ import { uid } from './lib/util.js'
 import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
-import { loadSyncStore } from './lib/sync.js'
+import { clone, loadSyncStore } from './lib/sync.js'
 import { toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
@@ -23,7 +23,7 @@ import UndoToast from './components/UndoToast.jsx'
 const UNDO_WINDOW_MS = 10_000
 
 function snapshot(value) {
-  return JSON.parse(JSON.stringify(value))
+  return clone(value)
 }
 
 function comparableRecord(value) {
@@ -44,12 +44,21 @@ function changedRecordIds(previousRecords = [], nextRecords = []) {
     .map((record) => record.id)
 }
 
+function comparableGameMetadata(value) {
+  if (!value) return null
+  const copy = snapshot(value)
+  delete copy.updatedAt
+  delete copy.updated_at
+  delete copy.players
+  delete copy.rounds
+  return JSON.stringify(copy)
+}
+
 function revivedGame(game, deletedAt) {
   const updatedAt = Math.max(Date.now(), (Number(deletedAt) || 0) + 1)
-  return {
-    ...snapshot(game),
-    updatedAt,
-  }
+  const revived = snapshot(game)
+  revived.updatedAt = updatedAt
+  return revived
 }
 
 export function AppShell({ content, undoToast, syncNotice }) {
@@ -163,10 +172,9 @@ export default function App() {
       const game = previous.games.find((candidate) => candidate.id === action.gameId)
       if (!game || game.rounds.some((round) => round.id === action.round.id)) return previous
       const rounds = game.rounds.slice()
-      rounds.splice(Math.min(action.roundIndex, rounds.length), 0, {
-        ...snapshot(action.round),
-        updatedAt: Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1),
-      })
+      const restoredRound = snapshot(action.round)
+      restoredRound.updatedAt = Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1)
+      rounds.splice(Math.min(action.roundIndex, rounds.length), 0, restoredRound)
       const restoredMetadata = action.gameSnapshot ? snapshot(action.gameSnapshot) : game
       const updatedGame = revivedGame({
         ...restoredMetadata,
@@ -276,6 +284,8 @@ export default function App() {
     }
     const changedRoundIds = changedRecordIds(previousGame?.rounds ?? [], next.rounds)
     const changedPlayerIds = changedRecordIds(previousGame?.players ?? [], next.players)
+    const includeGame = Boolean(removedRound)
+      || comparableGameMetadata(previousGame) !== comparableGameMetadata(next)
     applyMutation(
       (prev) => ({
         ...prev,
@@ -291,6 +301,7 @@ export default function App() {
         ) ?? []
         const mutations = [stateChangeMutation(nextState, previousState, {
           gameId: next.id,
+          includeGame,
           playerIds: changedPlayerIds,
           roundIds: changedRoundIds,
         })]

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as esbuild from 'esbuild'
-import { toRemoteRows } from '../src/lib/cloudState.js'
+import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
 import { enqueueMutation, loadSyncStore } from '../src/lib/sync.js'
 
 class MemoryStorage {
@@ -82,7 +82,11 @@ export function cloudConfigured() { return true }
 const fakeSync = `
 const state = globalThis.__scorebookTestSync ??= { mutations: [] }
 export const CONFLICT_MESSAGE = 'This was changed on another device. The shared version is now shown.'
-export function useCloudSync() {
+export function useCloudSync(currentState, setState) {
+  if (state.hydratedState && currentState !== state.hydratedState) {
+    setState(state.hydratedState)
+    state.hydratedState = null
+  }
   return {
     status: 'synced',
     pendingCount: state.mutations.length,
@@ -210,6 +214,7 @@ function resetTestState() {
   globalThis.__scorebookTestReact.reset()
   globalThis.__scorebookTestSync.mutations = []
   globalThis.__scorebookTestSync.error = null
+  globalThis.__scorebookTestSync.hydratedState = null
 }
 
 test('App round deletion queues the updated game before the round tombstone', async () => {
@@ -303,6 +308,7 @@ test('editing a synced round advances only that round in the queued mutation', a
 
   const mutation = globalThis.__scorebookTestSync.mutations[0]
   assert.equal(mutation.operation, 'upsert')
+  assert.deepEqual(mutation.payload.rows.games, [])
   assert.equal(mutation.payload.rows.rounds.length, 1)
   assert.equal(mutation.payload.rows.rounds[0].id, 'r_a')
   assert.ok(Date.parse(mutation.payload.rows.rounds[0].updated_at) > 100)
@@ -389,6 +395,36 @@ test('game Undo preserves untouched child timestamps in the full-game upsert', a
     restoredRows.rounds.map((round) => [round.id, round.updated_at]),
     [['r_old', new Date(200).toISOString()], ['r_unrelated', new Date(900).toISOString()]],
   )
+})
+
+test('game Undo preserves synced non-enumerable round timestamps', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const source = gameState()
+  source.activeGameId = null
+  source.games[0].updatedAt = 1000
+  source.games[0].rounds[0].updatedAt = 900
+  const syncedState = fromRemoteRows(toRemoteRows(source), null)
+  assert.equal(Object.prototype.propertyIsEnumerable.call(syncedState.games[0].rounds[0], 'updatedAt'), false)
+  prepareStorage(source)
+  resetTestState()
+  globalThis.__scorebookTestSync.hydratedState = syncedState
+
+  globalThis.__scorebookTestReact.begin()
+  App()
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  initial.props.content.props.children[0].props.onDelete('g_mutations')
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo').props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterUndo = App()
+  const restoredRound = afterUndo.props.content.props.children[0].props.games[0].rounds[0]
+  assert.equal(restoredRound.updatedAt, 900)
+  assert.equal(Object.prototype.propertyIsEnumerable.call(restoredRound, 'updatedAt'), false)
 })
 
 test('expired game deletion cannot restore the snapshot', async () => {

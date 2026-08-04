@@ -349,7 +349,8 @@ test('merges concurrent edits to different rounds without a stale CAS write', as
   }
   const remoteGame = {
     ...previousGame,
-    updatedAt: 1200,
+    updatedAt: 1400,
+    finishedAt: 1500,
     rounds: [
       previousGame.rounds[0],
       { id: 'r_b', updatedAt: 1400, entries: { p_one: { score: 800 }, p_two: { score: 75 } } },
@@ -371,7 +372,7 @@ test('merges concurrent edits to different rounds without a stale CAS write', as
   const mutationRows = toRemoteRowsDelta(
     { roster: players, games: [localGame] },
     { roster: players, games: [previousGame] },
-    { gameId: 'g_round_merge', playerIds: [], roundIds: ['r_a'] },
+    { gameId: 'g_round_merge', includeGame: false, playerIds: [], roundIds: ['r_a'] },
   )
   const observed = { hook: null, updates: [] }
   function Harness() {
@@ -398,6 +399,7 @@ test('merges concurrent edits to different rounds without a stale CAS write', as
     })
 
     assert.equal(upsertPayloads.length, 1)
+    assert.deepEqual(upsertPayloads[0].games, [])
     assert.deepEqual(upsertPayloads[0].rounds.map((round) => round.id), ['r_a'])
     assert.equal(observed.hook.error, null)
     assert.equal(observed.hook.pendingCount, 0)
@@ -408,6 +410,7 @@ test('merges concurrent edits to different rounds without a stale CAS write', as
       ['r_a', localGame.rounds[0].entries],
       ['r_b', remoteGame.rounds[1].entries],
     ])
+    assert.equal(merged.finishedAt, 1500)
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()

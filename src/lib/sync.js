@@ -23,7 +23,7 @@ function storageOrDefault(storage) {
   }
 }
 
-function clone(value) {
+export function clone(value) {
   if (value && typeof value === 'object') {
     const copy = Array.isArray(value) ? [] : {}
     for (const key of Reflect.ownKeys(value)) {
