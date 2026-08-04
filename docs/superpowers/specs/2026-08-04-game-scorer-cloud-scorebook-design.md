@@ -104,6 +104,8 @@ The current application stores a whole game as one JSON object. The cloud model 
 - `person_id text not null references people(id)`.
 - `seat_order integer not null`.
 - `name_snapshot text not null` — fallback display name from the time the game was created.
+- `updated_at timestamptz not null`.
+- `deleted_at timestamptz null` — membership tombstone for sync and re-addition.
 - Primary key: `(game_id, person_id)`.
 
 ### `rounds`
