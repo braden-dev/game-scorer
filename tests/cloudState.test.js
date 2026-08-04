@@ -191,3 +191,21 @@ test('round-trips player versions, player tombstones, and standalone person crea
     },
   ])
 })
+
+test('selects player tombstones by the maximum updated or deleted timestamp', () => {
+  const state = fromRemoteRows({
+    people: [{ id: 'p_player', name: 'Current' }],
+    games: [{ id: 'g_one', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:01.000Z', settings: {} }],
+    gamePlayers: [
+      { game_id: 'g_one', person_id: 'p_player', seat_order: 2, name_snapshot: 'Live', updated_at: '1970-01-01T00:00:00.850Z' },
+      { game_id: 'g_one', person_id: 'p_player', seat_order: 4, name_snapshot: 'Newest Update', updated_at: '1970-01-01T00:00:00.900Z', deleted_at: '1970-01-01T00:00:00.100Z' },
+      { game_id: 'g_one', person_id: 'p_player', seat_order: 1, name_snapshot: 'Stale Tombstone', updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.800Z' },
+    ],
+    rounds: [],
+  })
+
+  assert.deepEqual(toRemoteRows(state).gamePlayers, [{
+    game_id: 'g_one', person_id: 'p_player', seat_order: 4, name_snapshot: 'Newest Update',
+    updated_at: '1970-01-01T00:00:00.900Z', deleted_at: '1970-01-01T00:00:00.100Z',
+  }])
+})

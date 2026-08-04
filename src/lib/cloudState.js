@@ -148,8 +148,8 @@ function latestPlayerTombstone(metadata, gameId, personId) {
     .filter((record) => record.gameId === gameId && record.id === personId && isTombstone(record))
     .reduce((latest, record) => {
       if (!latest) return record
-      const latestVersion = timestamp(field(latest, 'deletedAt', 'deleted_at')) ?? timestamp(field(latest, 'updatedAt', 'updated_at')) ?? 0
-      const recordVersion = timestamp(field(record, 'deletedAt', 'deleted_at')) ?? timestamp(field(record, 'updatedAt', 'updated_at')) ?? 0
+      const latestVersion = tombstoneVersion(latest)
+      const recordVersion = tombstoneVersion(record)
       return recordVersion >= latestVersion ? record : latest
     }, null)
 }
@@ -161,9 +161,11 @@ function playerVersion(player, game) {
 }
 
 function tombstoneVersion(tombstone) {
-  return timestamp(field(tombstone, 'deletedAt', 'deleted_at'))
-    ?? timestamp(field(tombstone, 'updatedAt', 'updated_at'))
-    ?? 0
+  const timestamps = [
+    timestamp(field(tombstone, 'updatedAt', 'updated_at')),
+    timestamp(field(tombstone, 'deletedAt', 'deleted_at')),
+  ].filter((value) => value !== null)
+  return timestamps.length ? Math.max(...timestamps) : 0
 }
 
 export function normalizeName(name) {
