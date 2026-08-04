@@ -249,3 +249,67 @@ test('uses parent versions for missing local child timestamps and preserves newe
     { id: 'r_newer', updatedAt: 700, entries: { p_one: { score: 70 } } },
   ])
 })
+
+test('applies child-only updates and deletions when the parent game row is absent', () => {
+  const local = {
+    activeGameId: 'g_incremental',
+    roster: [{ id: 'p_one', name: 'One' }],
+    games: [{
+      id: 'g_incremental', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+      players: [{ id: 'p_one', name: 'Old One' }], settings: {},
+      rounds: [{ id: 'r_one', entries: { p_one: { score: 1 } } }], finishedAt: null,
+    }],
+  }
+  const update = fromRemoteRows({
+    people: [{ id: 'p_one', name: 'One', updated_at: '1970-01-01T00:00:00.200Z' }],
+    games: [],
+    gamePlayers: [{ game_id: 'g_incremental', person_id: 'p_one', seat_order: 0, name_snapshot: 'New One', updated_at: '1970-01-01T00:00:00.200Z' }],
+    rounds: [{ id: 'r_one', game_id: 'g_incremental', round_index: 0, entries: { p_one: { score: 2 } }, updated_at: '1970-01-01T00:00:00.200Z' }],
+  })
+  const updated = mergeRemoteState(local, update, 200)
+  assert.deepEqual(updated.games[0].players, [{ id: 'p_one', name: 'One' }])
+  assert.deepEqual(updated.games[0].rounds, [{ id: 'r_one', entries: { p_one: { score: 2 } } }])
+
+  const deletion = fromRemoteRows({
+    people: [],
+    games: [],
+    gamePlayers: [{ game_id: 'g_incremental', person_id: 'p_one', seat_order: 0, name_snapshot: 'New One', updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' }],
+    rounds: [{ id: 'r_one', game_id: 'g_incremental', round_index: 0, entries: {}, updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' }],
+  })
+  const deleted = mergeRemoteState(updated, deletion, 300)
+  assert.deepEqual(deleted.games[0].players, [])
+  assert.deepEqual(deleted.games[0].rounds, [])
+})
+
+test('persists cloud child versions and tombstones through a sync-store round trip', () => {
+  const storage = new MemoryStorage()
+  const remote = fromRemoteRows({
+    people: [{ id: 'p_deleted', name: 'Deleted', updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' }],
+    games: [{ id: 'g_deleted', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z', settings: {} }],
+    gamePlayers: [],
+    rounds: [],
+  })
+  const childVersion = fromRemoteRows({
+    people: [{ id: 'p_one', name: 'Remote One', updated_at: '1970-01-01T00:00:00.200Z' }],
+    games: [{ id: 'g_one', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.800Z', settings: {} }],
+    gamePlayers: [{ game_id: 'g_one', person_id: 'p_one', seat_order: 0, name_snapshot: 'Remote One', updated_at: '1970-01-01T00:00:00.200Z' }],
+    rounds: [{ id: 'r_one', game_id: 'g_one', round_index: 0, entries: { p_one: { score: 2 } }, updated_at: '1970-01-01T00:00:00.200Z' }],
+  })
+  const cache = mergeRemoteState(remote, childVersion, 800)
+  saveSyncStore({ cache: mergeRemoteState(cache, remote, 300), outbox: [], lastSyncAt: null, lastError: null, initialMigrationCompleted: false }, storage)
+  const reloaded = loadSyncStore(storage).cache
+
+  const local = {
+    activeGameId: 'g_deleted',
+    roster: [{ id: 'p_deleted', name: 'Deleted', updatedAt: 100 }],
+    games: [
+      { id: 'g_deleted', gameId: 'farkle', createdAt: 100, updatedAt: 100, players: [], settings: {}, rounds: [], finishedAt: null },
+      { id: 'g_one', gameId: 'farkle', createdAt: 100, updatedAt: 500, players: [{ id: 'p_one', name: 'Local One' }], settings: {}, rounds: [{ id: 'r_one', entries: { p_one: { score: 1 } } }], finishedAt: null },
+    ],
+  }
+  const merged = mergeRemoteState(local, reloaded, 800)
+  assert.deepEqual(merged.roster, [{ id: 'p_one', name: 'Remote One' }])
+  assert.deepEqual(merged.games.map((game) => game.id), ['g_one'])
+  assert.deepEqual(merged.games[0].players, [{ id: 'p_one', name: 'Local One' }])
+  assert.deepEqual(merged.games[0].rounds, [{ id: 'r_one', entries: { p_one: { score: 1 } } }])
+})

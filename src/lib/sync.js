@@ -1,5 +1,6 @@
 const KEY = 'gamescorer.cloud.v1'
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
+const SERIALIZED_METADATA_KEY = '__cloudMetadata'
 
 const EMPTY_CACHE = { games: [], roster: [], activeGameId: null }
 const EMPTY_STORE = {
@@ -35,6 +36,7 @@ function clone(value) {
 
 function normalizeCache(cache) {
   const normalized = cache && typeof cache === 'object' ? clone(cache) : {}
+  delete normalized[SERIALIZED_METADATA_KEY]
   normalized.games = Array.isArray(cache?.games) ? clone(cache.games) : []
   normalized.roster = Array.isArray(cache?.roster) ? clone(cache.roster) : []
   normalized.activeGameId = cache?.activeGameId ?? null
@@ -141,6 +143,14 @@ function metadataFor(state) {
   return state?.[CLOUD_METADATA] ?? {}
 }
 
+function setMetadata(state, metadata) {
+  Object.defineProperty(state, CLOUD_METADATA, {
+    value: metadata,
+    configurable: true,
+  })
+  return state
+}
+
 function metadataRecords(metadata, key) {
   return Array.isArray(metadata?.[key]) ? metadata[key] : []
 }
@@ -149,10 +159,105 @@ function childMetadata(metadata, key, gameId) {
   return metadataRecords(metadata, key).filter((record) => record.gameId === gameId)
 }
 
-function mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetadata) {
-  const remoteFallback = timestamp(recordField(remoteGame, 'updatedAt', 'updated_at')) ?? lastSyncAt ?? 0
+function withVersion(record, updatedAt) {
+  Object.defineProperty(record, 'updatedAt', {
+    value: updatedAt,
+    configurable: true,
+    writable: true,
+  })
+  return record
+}
+
+function serializableRecord(record) {
+  const serialized = {}
+  for (const key of Object.keys(record ?? {})) serialized[key] = clone(record[key])
+  const updatedAt = recordField(record, 'updatedAt', 'updated_at')
+  const deletedAt = recordField(record, 'deletedAt', 'deleted_at')
+  if (record?.gameId !== undefined) serialized.gameId = record.gameId
+  if (updatedAt !== undefined) serialized.updatedAt = updatedAt
+  if (deletedAt !== undefined) serialized.deletedAt = deletedAt
+  return serialized
+}
+
+function cacheVersionEntries(cache) {
+  const roster = cache.roster
+    .map((person) => ({ id: person.id, updatedAt: recordField(person, 'updatedAt', 'updated_at') }))
+    .filter((person) => person.updatedAt != null)
+  const gamePlayers = cache.games.flatMap((game) => (Array.isArray(game.players) ? game.players : [])
+    .map((player) => ({
+      gameId: game.id,
+      id: player.id,
+      updatedAt: recordField(player, 'updatedAt', 'updated_at'),
+    }))
+    .filter((player) => player.updatedAt != null))
+  const rounds = cache.games.flatMap((game) => (Array.isArray(game.rounds) ? game.rounds : [])
+    .map((round) => ({
+      gameId: game.id,
+      id: round.id,
+      updatedAt: recordField(round, 'updatedAt', 'updated_at'),
+    }))
+    .filter((round) => round.updatedAt != null))
+  return { roster, gamePlayers, rounds }
+}
+
+function metadataSnapshot(cache) {
+  const metadata = metadataFor(cache)
+  const versions = cacheVersionEntries(cache)
+  return {
+    roster: metadataRecords(metadata, 'roster').map(serializableRecord),
+    games: metadataRecords(metadata, 'games').map(serializableRecord),
+    gamePlayers: metadataRecords(metadata, 'gamePlayers').map(serializableRecord),
+    rounds: metadataRecords(metadata, 'rounds').map(serializableRecord),
+    versions,
+  }
+}
+
+function serializeCache(cache) {
+  const serialized = clone(cache)
+  serialized[SERIALIZED_METADATA_KEY] = metadataSnapshot(cache)
+  return serialized
+}
+
+function restoreCache(cache, serializedMetadata) {
+  const restored = normalizeCache(cache)
+  if (!serializedMetadata || typeof serializedMetadata !== 'object') return restored
+
+  const metadata = {
+    roster: Array.isArray(serializedMetadata.roster) ? clone(serializedMetadata.roster) : [],
+    games: Array.isArray(serializedMetadata.games) ? clone(serializedMetadata.games) : [],
+    gamePlayers: Array.isArray(serializedMetadata.gamePlayers) ? clone(serializedMetadata.gamePlayers) : [],
+    rounds: Array.isArray(serializedMetadata.rounds) ? clone(serializedMetadata.rounds) : [],
+  }
+  for (const record of [...metadata.gamePlayers, ...metadata.rounds]) {
+    if (record.updatedAt != null) withVersion(record, record.updatedAt)
+  }
+  const versions = serializedMetadata.versions ?? {}
+
+  for (const entry of Array.isArray(versions.roster) ? versions.roster : []) {
+    const record = restored.roster.find((person) => person.id === entry.id)
+    if (record && entry.updatedAt != null) withVersion(record, entry.updatedAt)
+  }
+  for (const entry of Array.isArray(versions.gamePlayers) ? versions.gamePlayers : []) {
+    const game = restored.games.find((candidate) => candidate.id === entry.gameId)
+    const record = game?.players?.find((player) => player.id === entry.id)
+    if (record && entry.updatedAt != null) withVersion(record, entry.updatedAt)
+  }
+  for (const entry of Array.isArray(versions.rounds) ? versions.rounds : []) {
+    const game = restored.games.find((candidate) => candidate.id === entry.gameId)
+    const record = game?.rounds?.find((round) => round.id === entry.id)
+    if (record && entry.updatedAt != null) withVersion(record, entry.updatedAt)
+  }
+
+  return setMetadata(restored, metadata)
+}
+
+function mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetadata, parentPresent = true) {
+  const remoteGameId = remoteGame?.id ?? localGame?.id
+  const remoteFallback = parentPresent
+    ? timestamp(recordField(remoteGame, 'updatedAt', 'updated_at')) ?? lastSyncAt ?? 0
+    : lastSyncAt ?? 0
   const localFallback = timestamp(recordField(localGame, 'updatedAt', 'updated_at')) ?? 0
-  const game = version(remoteGame, remoteFallback) >= version(localGame)
+  const game = parentPresent && version(remoteGame, remoteFallback) >= version(localGame, localFallback)
     ? remoteGame
     : localGame
   if (isTombstone(game)) return null
@@ -160,16 +265,26 @@ function mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetad
   const merged = withoutTombstone(game)
   merged.players = mergeRecords(
     [...(localGame?.players ?? []), ...childMetadata(localMetadata, 'gamePlayers', localGame?.id)],
-    [...(remoteGame?.players ?? []), ...childMetadata(remoteMetadata, 'gamePlayers', remoteGame?.id)],
+    [...(remoteGame?.players ?? []), ...childMetadata(remoteMetadata, 'gamePlayers', remoteGameId)],
     remoteFallback,
     localFallback,
   )
   merged.rounds = mergeRecords(
     [...(localGame?.rounds ?? []), ...childMetadata(localMetadata, 'rounds', localGame?.id)],
-    [...(remoteGame?.rounds ?? []), ...childMetadata(remoteMetadata, 'rounds', remoteGame?.id)],
+    [...(remoteGame?.rounds ?? []), ...childMetadata(remoteMetadata, 'rounds', remoteGameId)],
     remoteFallback,
     localFallback,
   )
+  merged.players = merged.players.map((player) => {
+    const visible = clone(player)
+    delete visible.gameId
+    return visible
+  })
+  merged.rounds = merged.rounds.map((round) => {
+    const visible = clone(round)
+    delete visible.gameId
+    return visible
+  })
   return merged
 }
 
@@ -189,7 +304,12 @@ function mergeGames(localGames, remoteGames, lastSyncAt, localMetadata, remoteMe
       continue
     }
     if (!remoteGame) {
-      if (!isTombstone(localGame)) merged.push(withoutTombstone(localGame))
+      const hasRemoteChildren = childMetadata(remoteMetadata, 'gamePlayers', id).length > 0
+        || childMetadata(remoteMetadata, 'rounds', id).length > 0
+      if (hasRemoteChildren) {
+        const game = mergeGame(localGame, null, lastSyncAt, localMetadata, remoteMetadata, false)
+        if (game) merged.push(game)
+      } else if (!isTombstone(localGame)) merged.push(withoutTombstone(localGame))
       continue
     }
 
@@ -204,7 +324,9 @@ export function loadSyncStore(storage) {
   try {
     const raw = storageOrDefault(storage)?.getItem(KEY)
     if (!raw) return emptyStore()
-    return normalizeStore(JSON.parse(raw))
+    const parsed = JSON.parse(raw)
+    const normalized = normalizeStore(parsed)
+    return { ...normalized, cache: restoreCache(normalized.cache, parsed?.cache?.[SERIALIZED_METADATA_KEY]) }
   } catch {
     return emptyStore()
   }
@@ -213,7 +335,8 @@ export function loadSyncStore(storage) {
 export function saveSyncStore(store, storage) {
   const normalized = normalizeStore(store)
   try {
-    storageOrDefault(storage)?.setItem(KEY, JSON.stringify(normalized))
+    const serializable = { ...normalized, cache: serializeCache(normalized.cache) }
+    storageOrDefault(storage)?.setItem(KEY, JSON.stringify(serializable))
   } catch {
     // Local persistence is best effort; the caller still has the normalized copy.
   }

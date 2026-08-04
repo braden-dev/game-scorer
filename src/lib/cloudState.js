@@ -79,6 +79,22 @@ function setMetadata(state, metadata) {
   return state
 }
 
+function childPlayerMetadata(player, peopleById) {
+  return withVersion({
+    gameId: player.game_id,
+    id: player.person_id,
+    name: peopleById.get(player.person_id)?.name ?? player.name_snapshot,
+  }, timestamp(field(player, 'updatedAt', 'updated_at')))
+}
+
+function childRoundMetadata(round) {
+  return withVersion({
+    gameId: round.game_id,
+    id: round.id,
+    entries: round.entries ?? {},
+  }, timestamp(field(round, 'updatedAt', 'updated_at')))
+}
+
 export function normalizeName(name) {
   return String(name ?? '').trim().toLocaleLowerCase()
 }
@@ -206,11 +222,21 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, acti
     games: rows(games)
       .filter(isTombstone)
       .map((game) => tombstoneRecord(game, game.id)),
-    gamePlayers: rows(gamePlayers)
-      .filter(isTombstone)
-      .map((player) => tombstoneRecord(player, player.person_id, player.game_id)),
-    rounds: rows(rounds)
-      .filter(isTombstone)
-      .map((round) => tombstoneRecord(round, round.id, round.game_id)),
+    gamePlayers: [
+      ...rows(gamePlayers)
+        .filter(isTombstone)
+        .map((player) => tombstoneRecord(player, player.person_id, player.game_id)),
+      ...rows(gamePlayers)
+        .filter((player) => !isTombstone(player) && !visibleGameIds.has(player.game_id))
+        .map((player) => childPlayerMetadata(player, peopleById)),
+    ],
+    rounds: [
+      ...rows(rounds)
+        .filter(isTombstone)
+        .map((round) => tombstoneRecord(round, round.id, round.game_id)),
+      ...rows(rounds)
+        .filter((round) => !isTombstone(round) && !visibleGameIds.has(round.game_id))
+        .map(childRoundMetadata),
+    ],
   })
 }

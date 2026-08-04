@@ -266,7 +266,7 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds }, activeGam
 }
 ```
 
-Use client IDs unchanged, convert millisecond timestamps to ISO strings on upload for the SQL `timestamptz` columns, convert them back to milliseconds on download, resolve current person names through `people`, and keep a game's `name_snapshot` as fallback. Keep remote tombstones in non-visible conversion metadata and preserve child-row versions so the merge step can reconcile deletions and independent game-player/round edits.
+Use client IDs unchanged, convert millisecond timestamps to ISO strings on upload for the SQL `timestamptz` columns, convert them back to milliseconds on download, resolve current person names through `people`, and keep a game's `name_snapshot` as fallback. Keep remote tombstones in non-visible conversion metadata and preserve child-row versions so the merge step can reconcile deletions and independent game-player/round edits. Serialize that metadata in the cloud cache and restore it on load without adding fields to the normal nested app state.
 
 - [ ] **Step 4: Write failing outbox tests**
 
@@ -284,7 +284,7 @@ export function removeMutation(store, mutationId) {}
 export function mergeRemoteState(localState, remoteState, lastSyncAt) {}
 ```
 
-Use a separate `gamescorer.cloud.v1` storage key containing `{ cache, outbox, lastSyncAt, lastError, initialMigrationCompleted }`. Keep `gamescorer.v1` readable for legacy backup import and migration. A mutation has `{ id, entity, entityId, operation, payload, createdAt }`. Merge remote rows by entity ID; newer `updatedAt` wins, and a remote `deletedAt` tombstone wins over an older live cache record. Compare child rows using their own versions, falling back to the parent game version only when a child timestamp is missing.
+Use a separate `gamescorer.cloud.v1` storage key containing `{ cache, outbox, lastSyncAt, lastError, initialMigrationCompleted }`. Keep `gamescorer.v1` readable for legacy backup import and migration. A mutation has `{ id, entity, entityId, operation, payload, createdAt }`. Merge remote rows by entity ID; newer `updatedAt` wins, and a remote `deletedAt` tombstone wins over an older live cache record. Compare child rows using their own versions, falling back to the parent game version only when a child timestamp is missing. Apply child-only updates and tombstones to matching local games even when the incremental response omits the parent game row.
 
 - [ ] **Step 6: Run focused tests and commit**
 
