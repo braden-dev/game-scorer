@@ -68,6 +68,10 @@ function timestampMilliseconds(value) {
   return Number.isFinite(milliseconds) ? milliseconds : 0
 }
 
+function nextVersion(now, existingVersion) {
+  return Math.max(now, timestampMilliseconds(existingVersion) + 1)
+}
+
 function migrationVersion(lastSyncAt) {
   const lastSyncMilliseconds = Date.parse(lastSyncAt ?? '')
   return new Date(Math.max(
@@ -312,17 +316,23 @@ export default function App() {
     return person
   }
 
-  const removeFromRoster = (id) =>
-    applyMutation(
-      (prev) => ({ ...prev, roster: prev.roster.filter((p) => p.id !== id) }),
-      () => ({
+  const removeFromRoster = (id) => applyMutation(
+    (prev) => ({ ...prev, roster: prev.roster.filter((p) => p.id !== id) }),
+    (_nextState, previousState) => {
+      const person = previousState.roster.find((candidate) => candidate.id === id)
+      const personSnapshot = person
+        ? { ...snapshot(person), createdAt: person.createdAt, updatedAt: person.updatedAt }
+        : null
+      return {
         id: uid('m'),
         entity: 'people',
         entityId: id,
         operation: 'softDelete',
-        updatedAt: Date.now(),
-      }),
-    )
+        updatedAt: nextVersion(Date.now(), person?.updatedAt),
+        ...(personSnapshot ? { payload: { person: personSnapshot } } : {}),
+      }
+    },
+  )
 
   const startGame = (gameId, players, settings) => {
     const game = {
@@ -370,13 +380,16 @@ export default function App() {
     const removedRoundIndex = removedRound ? previousGame.rounds.indexOf(removedRound) : -1
     const removedRoundMutationId = removedRound ? uid('m') : null
     const roundTimestamp = Date.now()
+    const roundDeleteTimestamp = removedRound
+      ? nextVersion(roundTimestamp, removedRound.updatedAt)
+      : null
     const removedPlayers = previousGame?.players?.filter(
       (player) => !updated.players.some((candidate) => candidate.id === player.id),
     ) ?? []
     const removedPlayerMutationIds = new Map(removedPlayers.map((player) => [player.id, uid('m')]))
     let playerRemovalStateMutationId = null
     const playerDeleteTimestamp = removedPlayers.length
-      ? Math.max(roundTimestamp, ...removedPlayers.map((player) => (Number(player.updatedAt) || 0) + 1))
+      ? Math.max(roundTimestamp, ...removedPlayers.map((player) => timestampMilliseconds(player.updatedAt) + 1))
       : null
     const candidateFinishedAt = status.finished
       ? (updated.finishedAt || previousGame?.finishedAt || null)
@@ -390,7 +403,7 @@ export default function App() {
       || (status.finished && !previousGame?.finishedAt)
       || (!status.finished && Boolean(previousGame?.finishedAt))
     const gameTimestamp = includeGame
-      ? Math.max(roundTimestamp, (Number(previousGame?.updatedAt) || 0) + 1)
+      ? nextVersion(roundTimestamp, previousGame?.updatedAt)
       : previousGame?.updatedAt ?? updated.updatedAt
     const rounds = updated.rounds.map((round, roundIndex) => {
       const previousRoundIndex = previousGame?.rounds?.findIndex((candidate) => candidate.id === round.id) ?? -1
@@ -402,8 +415,8 @@ export default function App() {
         ...round,
         updatedAt: Math.max(
           roundTimestamp,
-          (Number(previousRound?.updatedAt) || 0) + 1,
-          Number(round.updatedAt) || 0,
+          timestampMilliseconds(previousRound?.updatedAt) + 1,
+          timestampMilliseconds(round.updatedAt),
         ),
       }
     })
@@ -417,8 +430,8 @@ export default function App() {
         ...player,
         updatedAt: Math.max(
           roundTimestamp,
-          (Number(previousPlayer?.updatedAt) || 0) + 1,
-          Number(player.updatedAt) || 0,
+          timestampMilliseconds(previousPlayer?.updatedAt) + 1,
+          timestampMilliseconds(player.updatedAt),
         ),
       }
     })
@@ -447,7 +460,7 @@ export default function App() {
           entity: 'rounds',
           entityId: removedRound.id,
           operation: 'softDelete',
-          updatedAt: next.updatedAt,
+          updatedAt: roundDeleteTimestamp,
           payload: {
             gameId: next.id,
             roundIndex: previousGame.rounds.indexOf(removedRound),
@@ -485,7 +498,7 @@ export default function App() {
         gameSnapshot: snapshot(previousGame),
         round: snapshot(removedRound),
         roundIndex: removedRoundIndex,
-        deletedAt: next.updatedAt,
+        deletedAt: roundDeleteTimestamp,
         mutationId: removedRoundMutationId,
       })
     } else if (removedPlayers.length === 1 && previousGame) {
@@ -508,7 +521,7 @@ export default function App() {
     const def = game ? getGameDef(game.gameId) : null
     const label = def ? `this ${def.name} game` : 'this game'
     if (!window.confirm(`Delete ${label}? Undo is available for 10 seconds.`)) return
-    const deletedAt = Date.now()
+    const deletedAt = nextVersion(Date.now(), game?.updatedAt)
     const mutationId = uid('m')
     const gameIndex = state.games.findIndex((candidate) => candidate.id === id)
     const previousActiveGameId = state.activeGameId

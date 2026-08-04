@@ -612,6 +612,33 @@ test('preserves a reconstructed person created_at through local deletion tombsto
   assert.deepEqual(toRemoteRows(fromRemoteRows(toRemoteRows(deleted))).people, [expected])
 })
 
+test('uses the deleted person snapshot when the live roster row was already filtered', () => {
+  const deletedAt = '2026-01-04T00:00:00.000Z'
+  const deleted = applyCloudSoftDelete(
+    { roster: [], games: [], activeGameId: null },
+    'people',
+    'p_removed',
+    deletedAt,
+    {
+      person: {
+        id: 'p_removed',
+        name: 'Removed Person',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      },
+    },
+  )
+
+  assert.deepEqual(toRemoteRows(deleted).people, [{
+    id: 'p_removed',
+    name: 'Removed Person',
+    normalized_name: 'removed person',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: deletedAt,
+    deleted_at: deletedAt,
+  }])
+})
+
 test('emits preserved local round data when recording a parent-keyed tombstone', () => {
   const deletedAt = '2026-01-03T00:00:02.000Z'
   const cache = {

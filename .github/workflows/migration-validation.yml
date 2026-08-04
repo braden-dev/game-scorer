@@ -40,6 +40,23 @@ jobs:
             sudo apt-get install -y postgresql-client
           fi
 
+      - name: Provision Supabase data roles for migration checks
+        run: |
+          psql "$MIGRATION_TEST_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          begin
+            if not exists (select 1 from pg_roles where rolname = 'anon') then
+              create role anon nologin;
+            end if;
+            if not exists (select 1 from pg_roles where rolname = 'authenticated') then
+              create role authenticated nologin;
+            end if;
+          end
+          $$;
+          SQL
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+
       - name: Validate migrations
         run: npm run validate:migration
         env:

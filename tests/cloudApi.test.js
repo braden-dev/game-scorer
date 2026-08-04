@@ -955,6 +955,26 @@ test('rejects a stale composite game-player soft delete', async () => {
   assert.equal(client.rows('game_players')[0].deleted_at, null)
 })
 
+test('rejects same-millisecond soft deletes and accepts a newer version against a live row', async () => {
+  const existingAt = '2026-01-02T00:00:00.000Z'
+  const staleClient = mutableClient({
+    rounds: [{ id: 'r_version_boundary', game_id: 'g_one', updated_at: existingAt, deleted_at: null }],
+  })
+
+  await assert.rejects(
+    createCloudApi(staleClient).softDelete('rounds', 'r_version_boundary', existingAt),
+    /Supabase rounds: (?:stale mutation|conflicting equal-version row)/,
+  )
+  assert.equal(staleClient.rows('rounds')[0].deleted_at, null)
+
+  const newerAt = '2026-01-02T00:00:01.000Z'
+  const newerClient = mutableClient({
+    rounds: [{ id: 'r_version_boundary', game_id: 'g_one', updated_at: existingAt, deleted_at: null }],
+  })
+  await createCloudApi(newerClient).softDelete('rounds', 'r_version_boundary', newerAt)
+  assert.equal(newerClient.rows('rounds')[0].deleted_at, newerAt)
+})
+
 test('inserts new upsert rows when no remote row exists', async () => {
   const client = mutableClient()
 

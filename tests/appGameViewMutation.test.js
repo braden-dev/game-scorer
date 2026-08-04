@@ -452,6 +452,100 @@ test('new people receive current timestamps before their first incremental upser
   assert.equal(person.created_at, person.updated_at)
 })
 
+test('roster deletion captures the person snapshot and advances beyond a future local version', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const originalNow = Date.now
+  Date.now = () => 1_000
+  try {
+    prepareStorage({
+      games: [],
+      roster: [{ id: 'p_future', name: 'Future Person', createdAt: 5000, updatedAt: 5000 }],
+      activeGameId: null,
+    })
+    globalThis.window.location = { pathname: '/new-game/farkle' }
+    resetTestState()
+
+    globalThis.__scorebookTestReact.begin()
+    const appTree = App()
+    appContent(appTree).props.onRemoveFromRoster('p_future')
+
+    const mutation = globalThis.__scorebookTestSync.mutations[0]
+    assert.equal(mutation.updatedAt, 5001)
+    assert.deepEqual(mutation.payload, {
+      person: { id: 'p_future', name: 'Future Person', createdAt: 5000, updatedAt: 5000 },
+    })
+    assert.deepEqual(toRemoteRows(enqueueMutation(loadSyncStore(), mutation).cache).people, [{
+      id: 'p_future',
+      name: 'Future Person',
+      normalized_name: 'future person',
+      created_at: '1970-01-01T00:00:05.000Z',
+      updated_at: '1970-01-01T00:00:05.001Z',
+      deleted_at: '1970-01-01T00:00:05.001Z',
+    }])
+  } finally {
+    Date.now = originalNow
+  }
+})
+
+test('game, round, and membership deletions advance beyond future local versions', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const originalNow = Date.now
+  Date.now = () => 1_000
+  try {
+    const state = gameState()
+    state.games[0] = {
+      ...state.games[0],
+      updatedAt: 5000,
+      players: state.games[0].players.map((player) => ({ ...player, updatedAt: 5000 })),
+      rounds: [{ ...state.games[0].rounds[0], updatedAt: 9000 }],
+    }
+    prepareStorage(state)
+    globalThis.window.location = { pathname: '/games/g_mutations' }
+    resetTestState()
+
+    globalThis.__scorebookTestReact.begin()
+    const initial = App()
+    const game = initial.props.content.props.game
+    initial.props.content.props.onUpdate({
+      ...game,
+      players: game.players.filter((player) => player.id !== 'p_two'),
+      rounds: [],
+    })
+
+    const mutations = globalThis.__scorebookTestSync.mutations
+    assert.equal(mutations.find((mutation) => mutation.entity === 'rounds').updatedAt, 9001)
+    assert.equal(mutations.find((mutation) => mutation.entity === 'game_players').updatedAt, 5001)
+  } finally {
+    Date.now = originalNow
+  }
+})
+
+test('game deletion advances beyond a future local game version', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const originalNow = Date.now
+  Date.now = () => 1_000
+  try {
+    const state = gameState()
+    state.activeGameId = null
+    state.games[0].updatedAt = 5000
+    prepareStorage(state)
+    globalThis.window.location = { pathname: '/' }
+    globalThis.window.confirm = () => true
+    resetTestState()
+
+    globalThis.__scorebookTestReact.begin()
+    const appTree = App()
+    const home = appContent(appTree).props.children[0]
+    const homeTree = home.type(home.props)
+    const gameCard = findElement(homeTree, (element) => element.type?.name === 'GameCard')
+    findElement(gameCard.type(gameCard.props), (element) => element.props?.['aria-label'] === 'Delete Farkle game').props.onClick()
+
+    assert.equal(globalThis.__scorebookTestSync.mutations[0].updatedAt, 5001)
+  } finally {
+    Date.now = originalNow
+  }
+})
+
 test('editing a synced round advances only that round in the queued mutation', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()

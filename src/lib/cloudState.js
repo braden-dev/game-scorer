@@ -366,10 +366,11 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = nul
 
   if (group === 'people') {
     const personId = mutationPart(id, 'id', 'id')
+    const personSnapshot = details?.person ?? details?.personSnapshot ?? null
     const priorPerson = nextRoster.find((person) => person.id === personId)
       ?? metadataRecords(metadata, 'roster').find((person) => person.id === personId)
     nextRoster = nextRoster.filter((person) => person.id !== personId)
-    const deletedPerson = { ...priorPerson, ...tombstone, id: personId }
+    const deletedPerson = { ...personSnapshot, ...priorPerson, ...tombstone, id: personId }
     const priorCreatedAt = field(priorPerson, 'createdAt', 'created_at')
     if (priorCreatedAt !== undefined) deletedPerson.createdAt = priorCreatedAt
     nextMetadata.roster = addCloudTombstone(nextMetadata, 'roster', deletedPerson)
@@ -616,17 +617,25 @@ export function toRemoteRows(state) {
   })
   const deletedPeople = metadataRecords(metadata, 'roster')
     .filter((person) => isTombstone(person) && !livePersonIds.has(person.id))
-    .map((person) => ({
-      id: person.id,
-      name: person.name ?? '',
-      normalized_name: person.normalizedName ?? normalizeName(person.name),
-      created_at: isoTimestamp(field(person, 'createdAt', 'created_at'), true),
-      updated_at: isoTimestamp(
-        field(person, 'updatedAt', 'updated_at') ?? field(person, 'deletedAt', 'deleted_at'),
-        true,
-      ),
-      deleted_at: isoTimestamp(field(person, 'deletedAt', 'deleted_at')),
-    }))
+    .map((person) => {
+      const name = validRemoteName(person.name)
+        ? person.name
+        : validRemoteName(person.normalizedName) ? person.normalizedName : 'Unknown'
+      const normalizedName = validRemoteName(person.normalizedName)
+        ? person.normalizedName
+        : normalizeName(name)
+      return {
+        id: person.id,
+        name,
+        normalized_name: normalizedName,
+        created_at: isoTimestamp(field(person, 'createdAt', 'created_at'), true),
+        updated_at: isoTimestamp(
+          field(person, 'updatedAt', 'updated_at') ?? field(person, 'deletedAt', 'deleted_at'),
+          true,
+        ),
+        deleted_at: isoTimestamp(field(person, 'deletedAt', 'deleted_at')),
+      }
+    })
   const people = [...livePeople, ...deletedPeople]
 
   const gamePlayers = sourceGames.flatMap((game) => {

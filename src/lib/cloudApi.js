@@ -124,10 +124,6 @@ function keyFilters(query, definition, row) {
   return next
 }
 
-function selectedKeys(definition) {
-  return (definition.keys ?? definition.conflict.split(',').map((column) => [column])).map(([column]) => column).join(',')
-}
-
 function sameEntityKey(definition, left, right) {
   return (definition.keys ?? definition.conflict.split(',').map((column) => [column]))
     .every(([column]) => rowValue(left, column) === rowValue(right, column))
