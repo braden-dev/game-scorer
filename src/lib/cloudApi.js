@@ -101,9 +101,11 @@ function restorePayload(row) {
 
 function sameRestorePayload(existing, attempted) {
   const requested = restorePayload(attempted)
-  const canonical = Object.fromEntries(Object.keys(requested)
-    .map((key) => [key, existing?.[key] ?? null]))
-  return samePayload(canonical, requested)
+  const keys = Object.keys(requested)
+  return samePayload(
+    canonicalComparablePayload(existing, keys),
+    canonicalComparablePayload(attempted, keys),
+  )
 }
 
 function rowValue(row, column) {

@@ -798,6 +798,58 @@ test('compares restore tombstone timestamps semantically while retaining conflic
   )
 })
 
+test('compares all restore timestamps semantically while retaining real timestamp conflicts', async () => {
+  const client = mutableClient({
+    games: [{
+      id: 'g_restore_payload_format', game_id: 'farkle',
+      created_at: '2026-01-01 00:00:00.123456+00:00',
+      updated_at: '2026-01-02 00:00:01.123456+00:00',
+      finished_at: '2026-01-02 00:00:00.654321+00:00',
+      settings: { rounds: 10 }, deleted_at: '2026-01-02 00:00:00.000000+00:00',
+    }],
+  })
+
+  const restore = {
+    id: 'g_restore_payload_format', game_id: 'farkle',
+    created_at: '2026-01-01T00:00:00.123Z',
+    updated_at: '2026-01-03T00:00:00.000Z',
+    finished_at: '2026-01-02T00:00:00.654Z',
+    settings: { rounds: 10 }, deleted_at: null,
+  }
+  await createCloudApi(client).restoreRows({ games: [restore] }, {
+    games: [{
+      id: 'g_restore_payload_format',
+      updated_at: '2026-01-02T00:00:01.123456Z',
+      deleted_at: '2026-01-02T00:00:00.000Z',
+    }],
+  })
+  assert.equal(client.rows('games')[0].deleted_at, null)
+
+  const changedTimestampClient = mutableClient({
+    games: [{
+      id: 'g_restore_payload_conflict', game_id: 'farkle',
+      created_at: '2026-01-01 00:00:00.123456+00:00',
+      updated_at: '2026-01-02 00:00:01.123456+00:00',
+      finished_at: '2026-01-02 00:00:00.654321+00:00',
+      settings: { rounds: 10 }, deleted_at: '2026-01-02 00:00:00.000000+00:00',
+    }],
+  })
+  await assert.rejects(
+    createCloudApi(changedTimestampClient).restoreRows({ games: [{
+      ...restore,
+      id: 'g_restore_payload_conflict',
+      finished_at: '2026-01-02T00:00:00.655Z',
+    }] }, {
+      games: [{
+        id: 'g_restore_payload_conflict',
+        updated_at: '2026-01-02T00:00:01.123456Z',
+        deleted_at: '2026-01-02T00:00:00.000Z',
+      }],
+    }),
+    /games.*newer remote row/,
+  )
+})
+
 test('restores game and composite player tombstones through the same conditional path', async () => {
   const deletedAt = '2026-01-02T00:00:00.000Z'
   const serverAt = '2026-01-02T00:00:01.000Z'
