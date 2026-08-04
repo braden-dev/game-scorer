@@ -39,6 +39,8 @@ create table if not exists public.game_players (
   person_id text not null references public.people(id) on delete restrict,
   seat_order integer not null check (seat_order >= 0),
   name_snapshot text not null check (char_length(name_snapshot) between 1 and 80 and char_length(btrim(name_snapshot)) >= 1),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz,
   primary key (game_id, person_id)
 );
 
@@ -54,8 +56,6 @@ create table if not exists public.rounds (
   unique (game_id, round_index)
 );
 
-create index if not exists rounds_game_idx on public.rounds (game_id, round_index);
-
 drop trigger if exists people_set_updated_at on public.people;
 create trigger people_set_updated_at
 before update on public.people
@@ -64,6 +64,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists games_set_updated_at on public.games;
 create trigger games_set_updated_at
 before update on public.games
+for each row execute function public.set_updated_at();
+
+drop trigger if exists game_players_set_updated_at on public.game_players;
+create trigger game_players_set_updated_at
+before update on public.game_players
 for each row execute function public.set_updated_at();
 
 drop trigger if exists rounds_set_updated_at on public.rounds;
