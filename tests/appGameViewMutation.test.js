@@ -95,7 +95,7 @@ export function useCloudSync(currentState, setState) {
     status: 'synced',
     pendingCount: state.mutations.length,
     error: state.error ?? null,
-    syncNow: async () => ({ ok: true }),
+    syncNow: async () => ({ ok: true, fullSnapshot: true }),
     enqueueStateMutation(mutation) {
       state.mutations.push(mutation)
       return mutation

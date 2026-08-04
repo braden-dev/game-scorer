@@ -550,7 +550,7 @@ export default function App() {
       initialSyncResult = { ok: false, reason: 'error', error }
     }
     const reconciledStore = loadSyncStore()
-    if (initialSyncResult?.ok !== true) {
+    if (initialSyncResult?.ok !== true || initialSyncResult?.fullSnapshot !== true) {
       migrationStartedRef.current = false
       migrationRetryBlockedRef.current = initialSyncResult?.reason === 'offline'
         ? 'offline'

@@ -255,7 +255,7 @@ test('mounts the real hook, follows navigation during deferred sync, deduplicate
   }
 })
 
-test('returns explicit outcomes for successful, offline, and failed initial syncs', async () => {
+test('returns explicit outcomes with the requested snapshot mode', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
   let failSnapshot = false
@@ -269,8 +269,9 @@ test('returns explicit outcomes for successful, offline, and failed initial sync
     softDelete: async () => {},
   }
   const observed = { hook: null }
+  const setState = () => {}
   function Harness() {
-    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, { configured: true, api })
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, setState, { configured: true, api })
     return null
   }
 
@@ -281,16 +282,74 @@ test('returns explicit outcomes for successful, offline, and failed initial sync
 
     let result
     await act(async () => { result = await observed.hook.syncNow({ initial: true }) })
-    assert.deepEqual(result, { ok: true })
+    assert.deepEqual(result, { ok: true, fullSnapshot: true })
 
     globalThis.navigator.onLine = false
     await act(async () => { result = await observed.hook.syncNow({ initial: true }) })
-    assert.deepEqual(result, { ok: false, reason: 'offline' })
+    assert.deepEqual(result, { ok: false, reason: 'offline', fullSnapshot: true })
 
     globalThis.navigator.onLine = true
     failSnapshot = true
     await act(async () => { result = await observed.hook.syncNow({ initial: true }) })
-    assert.deepEqual(result, { ok: false, reason: 'error' })
+    assert.deepEqual(result, { ok: false, reason: 'error', fullSnapshot: true })
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('serializes a normal sync before an initial sync and preserves full snapshot results', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const initialGate = deferred()
+  const normalGate = deferred()
+  let snapshotCalls = 0
+  let incrementalCalls = 0
+  const api = {
+    fetchSnapshot: async () => {
+      snapshotCalls += 1
+      if (snapshotCalls === 1) return initialGate.promise
+      return { people: [], games: [], gamePlayers: [], rounds: [] }
+    },
+    fetchRowsUpdatedSince: async () => {
+      incrementalCalls += 1
+      return normalGate.promise
+    },
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  const setState = () => {}
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, setState, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    assert.equal(snapshotCalls, 1)
+
+    initialGate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
+    await act(async () => { await initialGate.promise })
+
+    const normalPromise = observed.hook.syncNow()
+    await act(async () => { await Promise.resolve() })
+    assert.equal(incrementalCalls, 1)
+
+    const initialPromise = observed.hook.syncNow({ initial: true })
+    assert.notEqual(initialPromise, normalPromise)
+    normalGate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
+
+    let normalResult
+    let initialResult
+    await act(async () => {
+      ;[normalResult, initialResult] = await Promise.all([normalPromise, initialPromise])
+    })
+    assert.deepEqual(normalResult, { ok: true, fullSnapshot: false })
+    assert.deepEqual(initialResult, { ok: true, fullSnapshot: true })
+    assert.equal(snapshotCalls, 2)
+    assert.equal(incrementalCalls, 1)
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()

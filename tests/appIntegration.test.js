@@ -98,7 +98,7 @@ export function useCloudSync() {
       state.status = 'offline'
       state.lastError = null
       persistStore()
-      return { ok: false, reason: 'offline' }
+      return { ok: false, reason: 'offline', fullSnapshot: Boolean(options.initial) }
     }
     if (options.initial) {
       try {
@@ -107,7 +107,7 @@ export function useCloudSync() {
         state.status = 'error'
         state.lastError = error.message
         persistStore()
-        return { ok: false, reason: 'error' }
+        return { ok: false, reason: 'error', fullSnapshot: true }
       }
       state.status = 'synced'
       state.lastError = null
@@ -122,7 +122,7 @@ export function useCloudSync() {
       state.status = 'synced'
       state.lastError = null
       persistStore()
-      return { ok: true }
+      return { ok: true, fullSnapshot: true }
     }
     try {
       await api.upsertRows(mutation.payload.rows, mutation)
@@ -133,14 +133,14 @@ export function useCloudSync() {
       state.status = 'error'
       state.lastError = error.message
       persistStore()
-      return { ok: false, reason: 'error' }
+      return { ok: false, reason: 'error', fullSnapshot: Boolean(options.initial) }
     }
     persistStore()
-    return { ok: true }
+    return { ok: true, fullSnapshot: Boolean(options.initial) }
   }
   state.syncNow = syncNow
   useEffect(() => {
-    const retry = () => { void syncNow({ initial: true }) }
+    const retry = () => { void syncNow() }
     window.addEventListener('online', retry)
     return () => window.removeEventListener('online', retry)
   }, [])

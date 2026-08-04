@@ -6,7 +6,6 @@ import {
   conservativeSyncCursor,
   activeGameIdForSync,
   clone,
-  createInFlightSync,
   enqueueMutation,
   loadSyncStore,
   mergeSyncStore,
@@ -24,6 +23,32 @@ const MAX_AUTOMATIC_RETRIES = 5
 export const CONFLICT_MESSAGE = 'Sync conflict; local changes kept. Retry when ready.'
 const TERMINAL_CONFLICT_MESSAGE = 'Sync conflict; local changes kept. Please review the shared result.'
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
+
+function createSyncRunner(operation) {
+  let normalInFlight = null
+  let initialInFlight = null
+
+  const runNormal = () => {
+    if (initialInFlight) return initialInFlight
+    if (normalInFlight) return normalInFlight
+    normalInFlight = Promise.resolve()
+      .then(() => operation({ initial: false }))
+      .finally(() => { normalInFlight = null })
+    return normalInFlight
+  }
+
+  const runInitial = () => {
+    if (initialInFlight) return initialInFlight
+    const currentNormal = normalInFlight
+    initialInFlight = (currentNormal
+      ? currentNormal.then(() => operation({ initial: true }), () => operation({ initial: true }))
+      : Promise.resolve().then(() => operation({ initial: true })))
+      .finally(() => { initialInFlight = null })
+    return initialInFlight
+  }
+
+  return (options = {}) => options.initial ? runInitial() : runNormal()
+}
 
 function online() {
   return globalThis.navigator?.onLine !== false
@@ -313,11 +338,11 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   const runSync = useCallback(async ({ initial = false } = {}) => {
     if (!configured || !apiRef.current) {
       if (mountedRef.current) setStatus('local')
-      return { ok: false, reason: 'error' }
+      return { ok: false, reason: 'error', fullSnapshot: initial }
     }
     if (!online()) {
       if (mountedRef.current) setStatus('offline')
-      return { ok: false, reason: 'offline' }
+      return { ok: false, reason: 'offline', fullSnapshot: initial }
     }
 
     let store = storeRef.current ?? loadSyncStore()
@@ -481,8 +506,8 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           : finalConflictMessage ? 'error' : pendingAfterReplay ? 'pending' : 'synced')
       }
       const result = finalConflictMessage || pendingAfterReplay
-        ? { ok: false, reason: 'error' }
-        : { ok: true }
+        ? { ok: false, reason: 'error', fullSnapshot: initial }
+        : { ok: true, fullSnapshot: initial }
       if (pendingAfterReplay) {
         setTimeout(() => {
           if (mountedRef.current && storeRef.current?.outbox.some(isReplayableMutation)) void syncNow()
@@ -508,12 +533,12 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           if (mountedRef.current) void syncNowRef.current?.()
         }, delay)
       }
-      return { ok: false, reason: 'error' }
+      return { ok: false, reason: 'error', fullSnapshot: initial }
     }
   }, [configured, publishStore, replayMutation, setState])
 
   const syncNow = useCallback((options) => {
-    if (!syncRunnerRef.current) syncRunnerRef.current = createInFlightSync(runSync)
+    if (!syncRunnerRef.current) syncRunnerRef.current = createSyncRunner(runSync)
     return syncRunnerRef.current(options)
   }, [runSync])
   syncNowRef.current = syncNow
