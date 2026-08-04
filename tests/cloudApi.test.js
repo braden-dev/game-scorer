@@ -33,6 +33,10 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
           calls.push({ table, operation: 'range', from, to })
           return query
         },
+        limit(count) {
+          calls.push({ table, operation: 'limit', count })
+          return query
+        },
         gte(column, value) {
           calls.push({ table, operation: 'gte', column, value })
           return query
@@ -54,6 +58,14 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
           calls.push({ table, operation: 'eq', column, value })
           return query
         },
+        gt(column, value) {
+          calls.push({ table, operation: 'gt', column, value })
+          return query
+        },
+        or(value) {
+          calls.push({ table, operation: 'or', value })
+          return query
+        },
         is(column, value) {
           calls.push({ table, operation: 'is', column, value })
           return query
@@ -71,6 +83,7 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
 function mutableClient(initialRows = {}, hooks = {}) {
   const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
   const calls = []
+  const readCounts = {}
   const timestampColumns = new Set(['created_at', 'updated_at', 'deleted_at', 'finished_at'])
   const normalizeInsertedRow = (table, row) => {
     const inserted = { ...row }
@@ -96,6 +109,54 @@ function mutableClient(initialRows = {}, hooks = {}) {
       let action = 'select'
       let payload = null
       const filters = []
+      const orders = []
+      let rangeStart = 0
+      let rangeEnd = Number.POSITIVE_INFINITY
+      let limitCount = Number.POSITIVE_INFINITY
+      let orFilter = null
+      const splitFilter = (value) => {
+        const parts = []
+        let start = 0
+        let depth = 0
+        let quoted = false
+        let escaped = false
+        for (let index = 0; index < value.length; index += 1) {
+          const character = value[index]
+          if (quoted) {
+            if (escaped) escaped = false
+            else if (character === '\\') escaped = true
+            else if (character === '"') quoted = false
+          } else if (character === '"') {
+            quoted = true
+          } else if (character === '(') {
+            depth += 1
+          } else if (character === ')') {
+            depth -= 1
+          } else if (character === ',' && depth === 0) {
+            parts.push(value.slice(start, index))
+            start = index + 1
+          }
+        }
+        parts.push(value.slice(start))
+        return parts
+      }
+      const parseFilter = (expression) => {
+        if (expression.startsWith('and(') && expression.endsWith(')')) {
+          const predicates = splitFilter(expression.slice(4, -1)).map(parseFilter)
+          return (row) => predicates.every((predicate) => predicate(row))
+        }
+        const firstDot = expression.indexOf('.')
+        const secondDot = expression.indexOf('.', firstDot + 1)
+        const column = expression.slice(0, firstDot)
+        const operator = expression.slice(firstDot + 1, secondDot)
+        let value = expression.slice(secondDot + 1)
+        if (value.startsWith('"') && value.endsWith('"')) {
+          value = value.slice(1, -1).replace(/\\(["\\])/g, '$1')
+        }
+        if (operator === 'eq') return (row) => row[column] === value
+        if (operator === 'gt') return (row) => row[column] > value
+        throw new Error(`Unsupported fake filter: ${expression}`)
+      }
       const query = {
         select(columns) {
           calls.push({ table, operation: 'select', columns })
@@ -103,10 +164,18 @@ function mutableClient(initialRows = {}, hooks = {}) {
         },
         order(column, options) {
           calls.push({ table, operation: 'order', column, options })
+          orders.push({ column, ascending: options?.ascending !== false })
           return query
         },
         range(from, to) {
           calls.push({ table, operation: 'range', from, to })
+          rangeStart = from
+          rangeEnd = to
+          return query
+        },
+        limit(count) {
+          calls.push({ table, operation: 'limit', count })
+          limitCount = count
           return query
         },
         gte(column, value) {
@@ -117,6 +186,16 @@ function mutableClient(initialRows = {}, hooks = {}) {
         eq(column, value) {
           calls.push({ table, operation: 'eq', column, value })
           filters.push((row) => row[column] === value)
+          return query
+        },
+        gt(column, value) {
+          calls.push({ table, operation: 'gt', column, value })
+          filters.push((row) => row[column] > value)
+          return query
+        },
+        or(value) {
+          calls.push({ table, operation: 'or', value })
+          orFilter = value
           return query
         },
         is(column, value) {
@@ -146,8 +225,24 @@ function mutableClient(initialRows = {}, hooks = {}) {
         then(resolve, reject) {
           try {
             const tableRows = tables[table] ?? (tables[table] = [])
-            const matches = tableRows.filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
-            let data = matches
+            if (action === 'select') {
+              const readNumber = readCounts[table] ?? 0
+              hooks.beforeRead?.(table, readNumber, tableRows)
+              readCounts[table] = readNumber + 1
+            }
+            const matches = tableRows
+              .filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
+              .filter((row) => !orFilter || splitFilter(orFilter).some((expression) => parseFilter(expression)(row)))
+              .sort((left, right) => {
+                for (const { column, ascending } of orders) {
+                  if (left[column] === right[column]) continue
+                  const result = left[column] > right[column] ? 1 : -1
+                  return ascending ? result : -result
+                }
+                return 0
+            })
+            const page = matches.slice(rangeStart, Math.min(rangeEnd + 1, rangeStart + limitCount))
+            let data = action === 'select' ? page : matches
             if (action === 'update') {
               for (const row of matches) Object.assign(row, payload)
             } else if (action === 'insert') {
@@ -452,25 +547,25 @@ test('rejects a restore when the existing tombstone has an invalid version', asy
   assert.equal(client.calls.some((call) => call.operation === 'update'), false)
 })
 
-test('reads every table with stable ordering and page-boundary pagination', async () => {
+test('reads every table with stable ordering, since filtering, and keyset page sizes', async () => {
   const pageSize = 1000
+  const rowFor = (table, index) => table === 'game_players'
+    ? {
+      game_id: index < pageSize ? 'g_one' : 'g_two',
+      person_id: `p_${String(index % pageSize).padStart(4, '0')}`,
+      updated_at: index < pageSize ? '2026-01-01T00:00:00.000Z' : '2026-01-02T00:00:00.000Z',
+    }
+    : {
+      id: `${table}-${String(index).padStart(4, '0')}`,
+      updated_at: index < pageSize ? '2026-01-01T00:00:00.000Z' : '2026-01-02T00:00:00.000Z',
+      ...(table === 'games' ? { deleted_at: index === pageSize ? '2026-01-02T00:00:00.000Z' : null } : {}),
+    }
   const tables = ['people', 'games', 'game_players', 'rounds']
-  const pages = Object.fromEntries(tables.map((table) => [table, [
-    {
-      start: 0,
-      rows: Array.from({ length: pageSize }, (_, index) => ({
-        id: `${table}-${index}`,
-        game_id: `${table}-game`,
-        person_id: `${table}-person-${index}`,
-        updated_at: '2026-01-01T00:00:00.000Z',
-      })),
-    },
-    {
-      start: pageSize,
-      rows: [{ id: `${table}-${pageSize}`, updated_at: '2026-01-02T00:00:00.000Z', deleted_at: '2026-01-02T00:00:00.000Z' }],
-    },
-  ]]))
-  const client = fakeClient({}, {}, {}, pages)
+  const rows = Object.fromEntries(tables.map((table) => [
+    table,
+    Array.from({ length: pageSize + 1 }, (_, index) => rowFor(table, index)),
+  ]))
+  const client = mutableClient(rows)
   const api = createCloudApi(client)
 
   const snapshot = await api.fetchSnapshot()
@@ -493,8 +588,67 @@ test('reads every table with stable ordering and page-boundary pagination', asyn
       { table: 'game_players', operation: 'order', column: 'person_id', options: { ascending: true } },
     ],
   )
-  assert.equal(client.calls.filter((call) => call.operation === 'range' && call.from === pageSize).length, 8)
+  assert.equal(client.calls.filter((call) => call.operation === 'range').length, 0)
+  assert.equal(client.calls.filter((call) => call.operation === 'limit' && call.count === pageSize).length, 16)
   assert.equal(client.calls.filter((call) => call.operation === 'gte').length, 8)
+})
+
+test('does not skip rows when a mutable table changes before the next keyset page', async () => {
+  const people = Array.from({ length: 1001 }, (_, index) => ({
+    id: `p_${String(index).padStart(4, '0')}`,
+    updated_at: '2026-01-01T00:00:00.000Z',
+  }))
+  const client = mutableClient({ people }, {
+    beforeRead(table, readNumber, tableRows) {
+      if (table !== 'people' || readNumber !== 1) return
+      tableRows.splice(tableRows.findIndex(({ id }) => id === 'p_0000'), 1)
+      tableRows.push({ id: 'p_1001', updated_at: '2026-01-01T00:00:00.000Z' })
+    },
+  })
+
+  const snapshot = await createCloudApi(client).fetchSnapshot()
+  const ids = snapshot.people.map(({ id }) => id)
+
+  assert.equal(ids.length, 1002)
+  assert.equal(new Set(ids).size, ids.length)
+  assert.ok(ids.includes('p_1000'))
+  assert.ok(ids.includes('p_1001'))
+  assert.equal(client.calls.filter((call) => call.operation === 'range').length, 0)
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'gt'), [
+    { table: 'people', operation: 'gt', column: 'id', value: 'p_0999' },
+  ])
+})
+
+test('uses escaped lexicographic filters for composite game player keys', async () => {
+  const gamePlayers = [
+    ...Array.from({ length: 999 }, (_, index) => ({
+      game_id: 'g1',
+      person_id: `p${String(index).padStart(4, '0')}`,
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })),
+    { game_id: 'g1', person_id: 'p0999,(x)', updated_at: '2026-01-01T00:00:00.000Z' },
+    { game_id: 'g2', person_id: 'p0000', updated_at: '2026-01-01T00:00:00.000Z' },
+  ]
+  const client = mutableClient({ game_players: gamePlayers }, {
+    beforeRead(table, readNumber, tableRows) {
+      if (table !== 'game_players' || readNumber !== 1) return
+      tableRows.splice(tableRows.findIndex(({ game_id, person_id }) => game_id === 'g1' && person_id === 'p0000'), 1)
+      tableRows.push({ game_id: 'g2', person_id: 'p0001', updated_at: '2026-01-01T00:00:00.000Z' })
+    },
+  })
+
+  const snapshot = await createCloudApi(client).fetchSnapshot()
+  const keys = snapshot.gamePlayers.map(({ game_id, person_id }) => `${game_id}:${person_id}`)
+
+  assert.equal(keys.length, 1002)
+  assert.equal(new Set(keys).size, keys.length)
+  assert.ok(keys.includes('g2:p0000'))
+  assert.ok(keys.includes('g2:p0001'))
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'or'), [{
+    table: 'game_players',
+    operation: 'or',
+    value: 'game_id.gt.g1,and(game_id.eq.g1,person_id.gt."p0999,(x)")',
+  }])
 })
 
 test('softDelete updates timestamps for a composite game player key', async () => {

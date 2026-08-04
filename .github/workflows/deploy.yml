@@ -16,8 +16,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 54322:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,12 +42,64 @@ jobs:
 
       - run: npm ci
 
+      - name: Test
+        run: npm test
+
       - name: Build
         # Pages serves the site from /<repo>/, so assets need that prefix.
         run: BUILD_BASE="/${GITHUB_REPOSITORY#*/}/" npm run build
         env:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+
+      - name: Assert production build artifacts
+        run: BUILD_BASE="/${GITHUB_REPOSITORY#*/}/" npm run assert:build
+
+      - name: Install PostgreSQL client when unavailable
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+
+      - name: Provision Supabase data roles for migration checks
+        run: |
+          psql "$MIGRATION_TEST_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+          do $$
+          begin
+            if not exists (select 1 from pg_roles where rolname = 'anon') then
+              create role anon nologin;
+            end if;
+            if not exists (select 1 from pg_roles where rolname = 'authenticated') then
+              create role authenticated nologin;
+            end if;
+          end
+          $$;
+          SQL
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+
+      - name: Validate migrations
+        run: npm run validate:migration
+        env:
+          MIGRATION_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+
+      - name: Store verified production artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-dist
+          path: dist
+          if-no-files-found: error
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified production artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-dist
+          path: dist
 
       - uses: actions/configure-pages@v5
 

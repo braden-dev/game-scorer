@@ -28,6 +28,10 @@ function mutableCloudClient(initialRows, {
       let action = 'select'
       let payload = null
       const filters = []
+      const orders = []
+      let rangeStart = 0
+      let rangeEnd = Number.POSITIVE_INFINITY
+      let limitCount = Number.POSITIVE_INFINITY
       const query = {
         select(columns) {
           calls.push({ table, operation: 'select', columns })
@@ -35,10 +39,18 @@ function mutableCloudClient(initialRows, {
         },
         order(column, options) {
           calls.push({ table, operation: 'order', column, options })
+          orders.push({ column, ascending: options?.ascending !== false })
           return query
         },
         range(from, to) {
           calls.push({ table, operation: 'range', from, to })
+          rangeStart = from
+          rangeEnd = to
+          return query
+        },
+        limit(count) {
+          calls.push({ table, operation: 'limit', count })
+          limitCount = count
           return query
         },
         gte(column, value) {
@@ -49,6 +61,15 @@ function mutableCloudClient(initialRows, {
         eq(column, value) {
           calls.push({ table, operation: 'eq', column, value })
           filters.push((row) => row[column] === value)
+          return query
+        },
+        gt(column, value) {
+          calls.push({ table, operation: 'gt', column, value })
+          filters.push((row) => row[column] > value)
+          return query
+        },
+        or(value) {
+          calls.push({ table, operation: 'or', value })
           return query
         },
         is(column, value) {
@@ -65,7 +86,18 @@ function mutableCloudClient(initialRows, {
         then(resolve, reject) {
           try {
             const tableRows = tables[table] ?? (tables[table] = [])
-            const matches = tableRows.filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
+            const matches = tableRows
+              .filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
+              .sort((left, right) => {
+                for (const { column, ascending } of orders) {
+                  if (left[column] === right[column]) continue
+                  const result = left[column] > right[column] ? 1 : -1
+                  return ascending ? result : -result
+                }
+                return 0
+              })
+            const page = matches.slice(rangeStart, Math.min(rangeEnd + 1, rangeStart + limitCount))
+            const data = action === 'select' ? page : matches
             if (enforceLiveRoundPositions && table === 'rounds' && ['update', 'upsert'].includes(action)) {
               const incomingRows = action === 'update'
                 ? matches.map((row) => ({ ...row, ...payload }))
@@ -109,7 +141,7 @@ function mutableCloudClient(initialRows, {
                 onUpdate?.(table, row, payload)
               }
             }
-            return Promise.resolve({ data: matches, error: null }).then(resolve, reject)
+            return Promise.resolve({ data, error: null }).then(resolve, reject)
           } catch (error) {
             return Promise.reject(error).then(resolve, reject)
           }

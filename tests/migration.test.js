@@ -17,6 +17,10 @@ const migrationWorkflowPath = path.resolve(
   path.dirname(migrationPath),
   '../../.github/workflows/migration-validation.yml',
 )
+const deployWorkflowPath = path.resolve(
+  path.dirname(migrationPath),
+  '../../.github/workflows/deploy.yml',
+)
 
 function assertLiveRoundPositions(rows) {
   const liveKeys = rows
@@ -93,4 +97,19 @@ test('migration validation workflow provisions Postgres and runs executable SQL 
   const normalizedWorkflow = workflow.toLowerCase()
   assert.ok(normalizedWorkflow.indexOf('create role anon') < normalizedWorkflow.indexOf('npm run validate:migration'))
   assert.match(workflow, /npm run validate:migration/)
+})
+
+test('Pages deployment is gated by one verified production artifact', () => {
+  const workflow = fs.readFileSync(deployWorkflowPath, 'utf8')
+  assert.match(workflow, /jobs:\s*\n\s+verify:/)
+  assert.match(workflow, /verify:[\s\S]*?npm test[\s\S]*?npm run build[\s\S]*?npm run assert:build[\s\S]*?npm run validate:migration/)
+  assert.match(workflow, /verify:[\s\S]*?services:\s*\n\s+postgres:/)
+  assert.match(workflow, /verify:[\s\S]*?create role anon/)
+  assert.match(workflow, /verify:[\s\S]*?create role authenticated/)
+  assert.match(workflow, /build:\s*\n\s+needs:\s+verify/)
+  assert.match(workflow, /build:[\s\S]*?download-artifact@v4[\s\S]*?upload-pages-artifact@v3/)
+  assert.match(workflow, /deploy:\s*\n\s+needs:\s+build/)
+  assert.equal((workflow.match(/VITE_SUPABASE_URL/g) ?? []).length, 2)
+  assert.equal((workflow.match(/VITE_SUPABASE_PUBLISHABLE_KEY/g) ?? []).length, 2)
+  assert.doesNotMatch(workflow, /secrets\./)
 })

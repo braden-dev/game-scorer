@@ -124,6 +124,28 @@ function keyFilters(query, definition, row) {
   return next
 }
 
+function postgrestFilterValue(value) {
+  if (value === null || value === undefined) throw new Error('Cannot paginate after a row with a missing order key')
+  const serialized = String(value)
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+    throw new Error('Cannot paginate after a row with an unsupported order key')
+  }
+  if (!/[,()"\\]/.test(serialized) && serialized === serialized.trim() && serialized !== '') return serialized
+  return `"${serialized.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+function afterKeyset(query, orderBy, lastRow) {
+  if (!lastRow) return query
+  const filters = orderBy.map((column, index) => {
+    const equal = orderBy
+      .slice(0, index)
+      .map((key) => `${key}.eq.${postgrestFilterValue(lastRow[key])}`)
+    const greater = `${column}.gt.${postgrestFilterValue(lastRow[column])}`
+    return equal.length ? `and(${[...equal, greater].join(',')})` : greater
+  })
+  return filters.length === 1 ? query.gt(orderBy[0], lastRow[orderBy[0]]) : query.or(filters.join(','))
+}
+
 function sameEntityKey(definition, left, right) {
   return (definition.keys ?? definition.conflict.split(',').map((column) => [column]))
     .every(([column]) => rowValue(left, column) === rowValue(right, column))
@@ -142,17 +164,19 @@ async function checked(response, table) {
 
 async function readTable(client, { key, table, orderBy = ['id'] }, since = null) {
   const allRows = []
-  for (let start = 0; ; start += PAGE_SIZE) {
+  let lastRow = null
+  for (;;) {
     let query = client.from(table).select('*')
     if (since !== null) query = query.gte('updated_at', since)
     for (const column of orderBy) {
       query = query.order(column, { ascending: true })
     }
-    query = query.range(start, start + PAGE_SIZE - 1)
+    query = afterKeyset(query, orderBy, lastRow).limit(PAGE_SIZE)
     const data = await checked(query, table)
     const page = Array.isArray(data) ? data : []
     allRows.push(...page)
     if (page.length < PAGE_SIZE) break
+    lastRow = page[page.length - 1]
   }
   return [key, allRows]
 }
