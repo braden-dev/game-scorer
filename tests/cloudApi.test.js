@@ -291,7 +291,7 @@ test('softDelete updates timestamps for a composite game player key', async () =
   ])
   assert.deepEqual(client.calls.filter((call) => call.operation === 'select'), [
     { table: 'game_players', operation: 'select', columns: '*' },
-    { table: 'game_players', operation: 'select', columns: 'game_id,person_id' },
+    { table: 'game_players', operation: 'select', columns: 'game_id,person_id,updated_at,deleted_at' },
   ])
 })
 
@@ -333,6 +333,38 @@ test('rejects an equal-version conflicting upsert but accepts an identical retry
     id: 'p_equal', name: 'Remote', updated_at: updatedAt, deleted_at: null,
   }] })
   assert.equal(client.rows('people')[0].name, 'Remote')
+})
+
+test('accepts a scalar upsert retry when the server only advanced updated_at', async () => {
+  const attemptedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const canonical = { id: 'p_retry', name: 'Same payload', updated_at: serverAt, deleted_at: null }
+  const client = mutableClient({ people: [canonical] })
+
+  const result = await createCloudApi(client).upsertRows({ people: [{
+    id: 'p_retry', name: 'Same payload', updated_at: attemptedAt, deleted_at: null,
+  }] })
+
+  assert.deepEqual(result.people, [canonical])
+  assert.deepEqual(client.rows('people'), [canonical])
+})
+
+test('accepts a composite upsert retry when the server only advanced updated_at', async () => {
+  const attemptedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const canonical = {
+    game_id: 'g_retry', person_id: 'p_retry', seat_order: 1, name_snapshot: 'Same payload',
+    updated_at: serverAt, deleted_at: null,
+  }
+  const client = mutableClient({ game_players: [canonical] })
+
+  const result = await createCloudApi(client).upsertRows({ gamePlayers: [{
+    game_id: 'g_retry', person_id: 'p_retry', seat_order: 1, name_snapshot: 'Same payload',
+    updated_at: attemptedAt, deleted_at: null,
+  }] })
+
+  assert.deepEqual(result.gamePlayers, [canonical])
+  assert.deepEqual(client.rows('game_players'), [canonical])
 })
 
 test('rejects stale composite game-player upserts', async () => {
@@ -378,6 +410,34 @@ test('rejects an equal-version conflicting soft delete but accepts an idempotent
   })
   await createCloudApi(deletedClient).softDelete('rounds', 'r_equal', updatedAt)
   assert.equal(deletedClient.rows('rounds')[0].deleted_at, updatedAt)
+})
+
+test('accepts a scalar delete retry when the desired tombstone has a newer server updated_at', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const canonical = { id: 'r_retry', game_id: 'g_retry', updated_at: serverAt, deleted_at: deletedAt }
+  const client = mutableClient({ rounds: [canonical] })
+
+  const result = await createCloudApi(client).softDelete('rounds', 'r_retry', deletedAt)
+
+  assert.deepEqual(result, canonical)
+  assert.deepEqual(client.rows('rounds'), [canonical])
+})
+
+test('accepts a composite delete retry when the desired tombstone has a newer server updated_at', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const canonical = {
+    game_id: 'g_retry', person_id: 'p_retry', updated_at: serverAt, deleted_at: deletedAt,
+  }
+  const client = mutableClient({ game_players: [canonical] })
+
+  const result = await createCloudApi(client).softDelete(
+    'gamePlayers', { gameId: 'g_retry', personId: 'p_retry' }, deletedAt,
+  )
+
+  assert.deepEqual(result, canonical)
+  assert.deepEqual(client.rows('game_players'), [canonical])
 })
 
 test('rejects a stale composite game-player soft delete', async () => {

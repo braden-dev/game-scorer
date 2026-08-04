@@ -49,6 +49,20 @@ function samePayload(left, right) {
   return stableValue(left) === stableValue(right)
 }
 
+function canonicalPayload(row) {
+  return Object.fromEntries(Reflect.ownKeys(row ?? {})
+    .filter((key) => typeof key === 'string' && key !== 'updated_at')
+    .sort()
+    .map((key) => [key, row[key] ?? null]))
+}
+
+function sameCanonicalPayload(existing, attempted) {
+  const requested = canonicalPayload(attempted)
+  const canonical = Object.fromEntries(Object.keys(requested)
+    .map((key) => [key, existing?.[key] ?? null]))
+  return samePayload(canonical, requested)
+}
+
 function rowValue(row, column) {
   if (row?.[column] !== undefined) return row[column]
   const camel = column.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
@@ -67,6 +81,10 @@ function keyFilters(query, definition, row) {
 
 function selectedKeys(definition) {
   return (definition.keys ?? definition.conflict.split(',').map((column) => [column])).map(([column]) => column).join(',')
+}
+
+function selectedMetadata(definition) {
+  return `${selectedKeys(definition)},updated_at,deleted_at`
 }
 
 async function checked(response, table) {
@@ -121,9 +139,13 @@ async function checkedWrite(query, table, action) {
 async function compareAndSetRow(client, definition, row, existing) {
   const existingVersion = rowVersion(existing)
   const requestedVersion = rowVersion(row)
-  if (existingVersion > requestedVersion) throw conflictError(definition.table)
-  if (Number.isFinite(existingVersion) && existingVersion === requestedVersion && !samePayload(existing, row)) {
-    throw equalVersionConflictError(definition.table)
+  if (existingVersion > requestedVersion) {
+    if (sameCanonicalPayload(existing, row)) return existing
+    throw conflictError(definition.table)
+  }
+  if (Number.isFinite(existingVersion) && existingVersion === requestedVersion) {
+    if (!sameCanonicalPayload(existing, row)) throw equalVersionConflictError(definition.table)
+    return existing
   }
 
   let query = keyFilters(client.from(definition.table).update(row), definition, row)
@@ -131,7 +153,8 @@ async function compareAndSetRow(client, definition, row, existing) {
   query = expectedUpdatedAt === null || expectedUpdatedAt === undefined
     ? query.is('updated_at', null)
     : query.eq('updated_at', expectedUpdatedAt)
-  await checkedWrite(query.select(selectedKeys(definition)), definition.table, 'update')
+  const data = await checkedWrite(query.select('*'), definition.table, 'update')
+  return Array.isArray(data) ? data[0] ?? existing : data ?? existing
 }
 
 async function upsertWithoutOverwriting(client, definition, row) {
@@ -144,7 +167,7 @@ async function upsertWithoutOverwriting(client, definition, row) {
   )
   const existing = await findExisting(client, definition, row)
   if (!existing) throw conflictError(definition.table)
-  await compareAndSetRow(client, definition, row, existing)
+  return compareAndSetRow(client, definition, row, existing)
 }
 
 function entityDefinition(entity) {
@@ -168,14 +191,18 @@ export function createCloudApi(client) {
     },
 
     async upsertRows(rows = {}) {
+      const canonicalRows = Object.fromEntries(TABLES.map((definition) => [definition.key, []]))
       for (const definition of TABLES) {
         const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
         for (const row of payload) {
           const existing = await findExisting(client, definition, row)
-          if (existing && rowVersion(existing) > rowVersion(row)) throw conflictError(definition.table)
-          await upsertWithoutOverwriting(client, definition, row)
+          if (existing && rowVersion(existing) > rowVersion(row) && !sameCanonicalPayload(existing, row)) {
+            throw conflictError(definition.table)
+          }
+          canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row))
         }
       }
+      return canonicalRows
     },
 
     async fetchRowsUpdatedSince(isoTimestamp) {
@@ -195,11 +222,15 @@ export function createCloudApi(client) {
       if (!existing) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
       const existingVersion = rowVersion(existing)
       const requestedVersionValue = requestedVersion ?? Number.NEGATIVE_INFINITY
-      if (existingVersion > requestedVersionValue) throw conflictError(definition.table)
+      if (existingVersion > requestedVersionValue) {
+        if (timestamp(existing.deleted_at) === requestedVersion) return existing
+        throw conflictError(definition.table)
+      }
       if (Number.isFinite(requestedVersion) && existingVersion === requestedVersion) {
         const alreadyDeleted = timestamp(existing.deleted_at) === requestedVersion
           && timestamp(existing.updated_at) === requestedVersion
-        if (!alreadyDeleted) throw equalVersionConflictError(definition.table)
+        if (alreadyDeleted) return existing
+        throw equalVersionConflictError(definition.table)
       }
 
       query = client.from(definition.table).update({ deleted_at: updatedAt, updated_at: updatedAt })
@@ -211,7 +242,8 @@ export function createCloudApi(client) {
       query = existing.updated_at === null || existing.updated_at === undefined
         ? query.is('updated_at', null)
         : query.eq('updated_at', existing.updated_at)
-      await checkedWrite(query.select(selectedKeys(definition)), definition.table, 'soft delete')
+      const result = await checkedWrite(query.select(selectedMetadata(definition)), definition.table, 'soft delete')
+      return Array.isArray(result) ? result[0] ?? existing : result ?? existing
     },
   }
 }
