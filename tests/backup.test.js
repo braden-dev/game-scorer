@@ -53,17 +53,24 @@ test('backup import keeps valid games and skips malformed nested records with a 
 
 test('backup import rejects oversized roster and player snapshot names with visible skip counts', () => {
   const oversized = 'x'.repeat(81)
+  const paddedValid = `  ${'x'.repeat(80)}  `
   const backup = parseBackup(JSON.stringify({
     format: 'gamescorer-backup',
     version: 1,
     roster: [
       { id: 'p_valid', name: 'Valid' },
       { id: 'p_long', name: oversized },
+      { id: 'p_padded_valid', name: paddedValid },
+      { id: 'p_missing', name: undefined },
     ],
     games: [
       {
         id: 'g_valid', gameId: 'farkle', settings: {},
         players: [{ id: 'p_valid', name: 'Valid' }], rounds: [],
+      },
+      {
+        id: 'g_padded_valid', gameId: 'farkle', settings: {},
+        players: [{ id: 'p_padded_valid', name: paddedValid, nameSnapshot: paddedValid }], rounds: [],
       },
       {
         id: 'g_long_name', gameId: 'farkle', settings: {},
@@ -73,14 +80,18 @@ test('backup import rejects oversized roster and player snapshot names with visi
         id: 'g_long_snapshot', gameId: 'farkle', settings: {},
         players: [{ id: 'p_long_snapshot', name: 'Snapshot', nameSnapshot: oversized }], rounds: [],
       },
+      {
+        id: 'g_missing_name', gameId: 'farkle', settings: {},
+        players: [{ id: 'p_missing_name' }], rounds: [],
+      },
     ],
   }))
 
   const merged = mergeBackup({ games: [], roster: [] }, backup)
 
-  assert.deepEqual(merged.state.roster.map(({ id }) => id), ['p_valid'])
-  assert.deepEqual(merged.state.games.map(({ id }) => id), ['g_valid'])
-  assert.equal(merged.skipped.invalidPlayers, 1)
-  assert.equal(merged.skipped.invalidGames, 2)
+  assert.deepEqual(merged.state.roster.map(({ id }) => id), ['p_valid', 'p_padded_valid'])
+  assert.deepEqual(merged.state.games.map(({ id }) => id), ['g_valid', 'g_padded_valid'])
+  assert.equal(merged.skipped.invalidPlayers, 2)
+  assert.equal(merged.skipped.invalidGames, 3)
   assert.equal(merged.skipped.oversizedNames, 3)
 })

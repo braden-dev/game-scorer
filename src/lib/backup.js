@@ -23,12 +23,12 @@ function validId(value) {
 
 function validName(value) {
   return typeof value === 'string'
-    && value.trim().length > 0
-    && Array.from(value).length <= MAX_NAME_LENGTH
+    && Array.from(value.trim()).length > 0
+    && Array.from(value.trim()).length <= MAX_NAME_LENGTH
 }
 
 function oversizedName(value) {
-  return typeof value === 'string' && Array.from(value).length > MAX_NAME_LENGTH
+  return typeof value === 'string' && Array.from(value.trim()).length > MAX_NAME_LENGTH
 }
 
 function validSettings(gameId, settings) {

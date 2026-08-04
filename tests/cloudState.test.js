@@ -276,14 +276,21 @@ test('fromRemoteRows ignores malformed records, logs a diagnostic, and keeps val
 
 test('fromRemoteRows quarantines remote names outside the database constraint', () => {
   const invalidNames = ['', '   ', 'x'.repeat(81)]
+  const paddedValid = `  ${'x'.repeat(80)}  `
   const people = [
     { id: 'p_valid', name: 'Valid Person' },
+    { id: 'p_padded_valid', name: paddedValid },
+    { id: 'p_deleted', name: 'Deleted Person', deleted_at: '2026-01-01T00:00:00.000Z' },
+    { id: 'p_missing_tombstone', deleted_at: '2026-01-01T00:00:00.000Z' },
     ...invalidNames.map((name, index) => ({ id: `p_bad_${index}`, name })),
   ]
   const gamePlayers = [
     { game_id: 'g_valid', person_id: 'p_valid', seat_order: 0, name_snapshot: 'Valid Snapshot' },
+    { game_id: 'g_valid', person_id: 'p_padded_valid', seat_order: 1, name_snapshot: paddedValid },
+    { game_id: 'g_valid', person_id: 'p_deleted', seat_order: 2, name_snapshot: 'Deleted Snapshot', deleted_at: '2026-01-01T00:00:00.000Z' },
+    { game_id: 'g_valid', person_id: 'p_missing_snapshot', seat_order: 3 },
     ...invalidNames.map((name, index) => ({
-      game_id: 'g_valid', person_id: `p_bad_${index}`, seat_order: index + 1, name_snapshot: name,
+      game_id: 'g_valid', person_id: `p_bad_${index}`, seat_order: index + 4, name_snapshot: name,
     })),
   ]
 
@@ -294,13 +301,23 @@ test('fromRemoteRows quarantines remote names outside the database constraint', 
     rounds: [],
   })
 
-  assert.deepEqual(state.roster, [{ id: 'p_valid', name: 'Valid Person' }])
-  assert.deepEqual(state.games[0].players, [{ id: 'p_valid', name: 'Valid Person' }])
-  assert.deepEqual(toRemoteRows(state).people.map(({ id, name }) => ({ id, name })), [
+  assert.deepEqual(state.roster, [
     { id: 'p_valid', name: 'Valid Person' },
+    { id: 'p_padded_valid', name: paddedValid },
   ])
-  assert.deepEqual(toRemoteRows(state).gamePlayers.map(({ person_id, name_snapshot }) => ({ person_id, name_snapshot })), [
-    { person_id: 'p_valid', name_snapshot: 'Valid Snapshot' },
+  assert.deepEqual(state.games[0].players, [
+    { id: 'p_valid', name: 'Valid Person' },
+    { id: 'p_padded_valid', name: paddedValid },
+  ])
+  assert.deepEqual(toRemoteRows(state).people.map(({ id, name, deleted_at }) => ({ id, name, deleted_at })), [
+    { id: 'p_valid', name: 'Valid Person', deleted_at: null },
+    { id: 'p_padded_valid', name: paddedValid, deleted_at: null },
+    { id: 'p_deleted', name: 'Deleted Person', deleted_at: '2026-01-01T00:00:00.000Z' },
+  ])
+  assert.deepEqual(toRemoteRows(state).gamePlayers.map(({ person_id, name_snapshot, deleted_at }) => ({ person_id, name_snapshot, deleted_at })), [
+    { person_id: 'p_valid', name_snapshot: 'Valid Snapshot', deleted_at: null },
+    { person_id: 'p_padded_valid', name_snapshot: paddedValid, deleted_at: null },
+    { person_id: 'p_deleted', name_snapshot: 'Deleted Snapshot', deleted_at: '2026-01-01T00:00:00.000Z' },
   ])
 })
 

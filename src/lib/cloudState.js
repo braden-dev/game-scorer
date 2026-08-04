@@ -63,8 +63,8 @@ function isRecord(value) {
 
 function validRemoteName(value) {
   return typeof value === 'string'
-    && value.trim().length > 0
-    && Array.from(value).length <= MAX_NAME_LENGTH
+    && Array.from(value.trim()).length > 0
+    && Array.from(value.trim()).length <= MAX_NAME_LENGTH
 }
 
 function warnMalformedRemote(kind, row, reason) {
@@ -96,7 +96,7 @@ function validRemoteRow(kind, row) {
   if (!isRecord(row)) return false
   if (kind === 'person') {
     return typeof row.id === 'string' && row.id.length > 0
-      && (row.name === undefined ? isTombstone(row) : validRemoteName(row.name))
+      && validRemoteName(row.name)
   }
   if (kind === 'game') {
     return typeof row.id === 'string' && row.id.length > 0
@@ -107,7 +107,7 @@ function validRemoteRow(kind, row) {
   if (kind === 'player') {
     return typeof row.game_id === 'string' && row.game_id.length > 0
       && typeof row.person_id === 'string' && row.person_id.length > 0
-      && (row.name_snapshot === undefined || validRemoteName(row.name_snapshot))
+      && validRemoteName(row.name_snapshot)
       && (isTombstone(row) || (row.seat_order === undefined || Number.isInteger(row.seat_order)))
   }
   return typeof row.game_id === 'string' && row.game_id.length > 0
