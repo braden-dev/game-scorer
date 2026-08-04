@@ -499,6 +499,12 @@ export function conservativeSyncCursor(previous, startedAt) {
   return new Date(Math.max(0, cursor)).toISOString()
 }
 
+export function activeGameIdForSync(stateRef, store) {
+  const state = stateRef?.current
+  if (state && Object.prototype.hasOwnProperty.call(state, 'activeGameId')) return state.activeGameId ?? null
+  return store?.cache?.activeGameId ?? null
+}
+
 export function createInFlightSync(operation) {
   let inFlight = null
   return (...args) => {

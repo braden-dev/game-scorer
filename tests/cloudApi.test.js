@@ -2,18 +2,33 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createCloudApi } from '../src/lib/cloudApi.js'
 
-function fakeClient(rows = {}, errors = {}, rejections = {}) {
+function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
   const calls = []
   const client = {
     calls,
     from(table) {
-      const response = { data: rows[table] ?? [], error: errors[table] ?? null }
+      let rangeStart = 0
+      const response = () => ({
+        data: pages[table]
+          ? pages[table].find((page) => page.start === rangeStart)?.rows ?? []
+          : rows[table] ?? [],
+        error: errors[table] ?? null,
+      })
       const request = () => rejections[table]
         ? Promise.reject(rejections[table])
-        : Promise.resolve(response)
+        : Promise.resolve(response())
       const query = {
         select(columns) {
           calls.push({ table, operation: 'select', columns })
+          return query
+        },
+        order(column, options) {
+          calls.push({ table, operation: 'order', column, options })
+          return query
+        },
+        range(from, to) {
+          rangeStart = from
+          calls.push({ table, operation: 'range', from, to })
           return query
         },
         gte(column, value) {
@@ -65,7 +80,7 @@ test('fetchSnapshot returns all four tables, including tombstones', async () => 
 })
 
 test('upsertRows writes rows in foreign-key order with conflict keys', async () => {
-  const client = fakeClient()
+  const client = fakeClient({ game_players: [{ game_id: 'g_one', person_id: 'p_one' }] })
   const rows = {
     people: [{ id: 'p_one', name: 'One', updated_at: '2026-01-01T00:00:00Z' }],
     games: [{ id: 'g_one', game_id: 'farkle', updated_at: '2026-01-01T00:00:00Z' }],
@@ -105,8 +120,53 @@ test('fetchRowsUpdatedSince filters every table without filtering tombstones', a
   ])
 })
 
+test('reads every table with stable ordering and page-boundary pagination', async () => {
+  const pageSize = 1000
+  const tables = ['people', 'games', 'game_players', 'rounds']
+  const pages = Object.fromEntries(tables.map((table) => [table, [
+    {
+      start: 0,
+      rows: Array.from({ length: pageSize }, (_, index) => ({
+        id: `${table}-${index}`,
+        game_id: `${table}-game`,
+        person_id: `${table}-person-${index}`,
+        updated_at: '2026-01-01T00:00:00.000Z',
+      })),
+    },
+    {
+      start: pageSize,
+      rows: [{ id: `${table}-${pageSize}`, updated_at: '2026-01-02T00:00:00.000Z', deleted_at: '2026-01-02T00:00:00.000Z' }],
+    },
+  ]]))
+  const client = fakeClient({}, {}, {}, pages)
+  const api = createCloudApi(client)
+
+  const snapshot = await api.fetchSnapshot()
+  const incremental = await api.fetchRowsUpdatedSince('2026-01-01T00:00:00.000Z')
+
+  for (const key of ['people', 'games', 'gamePlayers', 'rounds']) {
+    assert.equal(snapshot[key].length, pageSize + 1)
+    assert.equal(incremental[key].length, pageSize + 1)
+  }
+  assert.equal(snapshot.games.at(-1).deleted_at, '2026-01-02T00:00:00.000Z')
+
+  const reads = client.calls.filter((call) => call.operation === 'select')
+  assert.equal(reads.length, 16)
+  assert.deepEqual(
+    client.calls.filter((call) => call.operation === 'order').slice(0, 4),
+    [
+      { table: 'people', operation: 'order', column: 'id', options: { ascending: true } },
+      { table: 'games', operation: 'order', column: 'id', options: { ascending: true } },
+      { table: 'game_players', operation: 'order', column: 'game_id', options: { ascending: true } },
+      { table: 'game_players', operation: 'order', column: 'person_id', options: { ascending: true } },
+    ],
+  )
+  assert.equal(client.calls.filter((call) => call.operation === 'range' && call.from === pageSize).length, 8)
+  assert.equal(client.calls.filter((call) => call.operation === 'gte').length, 8)
+})
+
 test('softDelete updates timestamps for a composite game player key', async () => {
-  const client = fakeClient()
+  const client = fakeClient({ game_players: [{ game_id: 'g_one', person_id: 'p_one' }] })
   const updatedAt = '2026-01-03T00:00:00.000Z'
 
   await createCloudApi(client).softDelete('gamePlayers', { gameId: 'g_one', personId: 'p_one' }, updatedAt)
@@ -120,6 +180,18 @@ test('softDelete updates timestamps for a composite game player key', async () =
     { table: 'game_players', operation: 'eq', column: 'game_id', value: 'g_one' },
     { table: 'game_players', operation: 'eq', column: 'person_id', value: 'p_one' },
   ])
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'select'), [
+    { table: 'game_players', operation: 'select', columns: 'game_id,person_id' },
+  ])
+})
+
+test('softDelete rejects when no row matched the requested key', async () => {
+  const client = fakeClient()
+
+  await assert.rejects(
+    createCloudApi(client).softDelete('rounds', 'missing', '2026-01-03T00:00:00.000Z'),
+    /rounds.*no rows matched/,
+  )
 })
 
 test('Supabase errors name the table and provider message', async () => {

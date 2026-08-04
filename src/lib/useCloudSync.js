@@ -4,6 +4,7 @@ import { createCloudApi } from './cloudApi.js'
 import { copyCloudMetadata, fromRemoteRows, hasCloudMetadata, mergeCloudCache, toRemoteRows } from './cloudState.js'
 import {
   conservativeSyncCursor,
+  activeGameIdForSync,
   createInFlightSync,
   enqueueMutation,
   loadSyncStore,
@@ -73,8 +74,8 @@ function initialCache(store, state) {
   return cacheForState(state)
 }
 
-export function useCloudSync(currentState, setState) {
-  const configured = cloudConfigured()
+export function useCloudSync(currentState, setState, dependencies = {}) {
+  const configured = dependencies.configured ?? cloudConfigured()
   const [status, setStatus] = useState(configured ? 'syncing' : 'local')
   const [pendingCount, setPendingCount] = useState(0)
   const [error, setError] = useState(null)
@@ -82,7 +83,7 @@ export function useCloudSync(currentState, setState) {
   const storeRef = useRef(null)
   const mountedRef = useRef(false)
   const syncRunnerRef = useRef(null)
-  const apiRef = useRef(configured ? createCloudApi(supabase) : null)
+  const apiRef = useRef(dependencies.api ?? (configured ? createCloudApi(supabase) : null))
 
   useEffect(() => {
     stateRef.current = currentState
@@ -127,7 +128,7 @@ export function useCloudSync(currentState, setState) {
     const syncStartedAt = new Date().toISOString()
     const syncCursor = conservativeSyncCursor(store.lastSyncAt, syncStartedAt)
     const previousSyncAt = store.lastSyncAt
-    const activeGameId = stateRef.current?.activeGameId ?? null
+    const activeGameId = activeGameIdForSync(stateRef, store)
     const baseCache = copyCloudMetadata(
       copyCloudMetadata({ ...cacheForState(stateRef.current), ...store.cache, activeGameId }, store.cache),
       stateRef.current,
@@ -143,12 +144,14 @@ export function useCloudSync(currentState, setState) {
       const rows = initial || !store.lastSyncAt
         ? await apiRef.current.fetchSnapshot()
         : await apiRef.current.fetchRowsUpdatedSince(store.lastSyncAt)
-      const remoteState = fromRemoteRows(rows, activeGameId)
       const latestStore = storeRef.current ?? store
-      const mergedState = mergeRemoteState(latestStore.cache, remoteState, previousSyncAt)
+      const latestActiveGameId = activeGameIdForSync(stateRef, latestStore)
+      const latestCache = { ...latestStore.cache, activeGameId: latestActiveGameId }
+      const remoteState = fromRemoteRows(rows, latestActiveGameId)
+      const mergedState = mergeRemoteState(latestCache, remoteState, previousSyncAt)
       const mergedCache = copyCloudMetadata({
         ...mergedState,
-        activeGameId,
+        activeGameId: latestActiveGameId,
       }, mergedState)
       store = commitStore({
         ...latestStore,

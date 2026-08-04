@@ -1,8 +1,8 @@
 const TABLES = [
-  { key: 'people', table: 'people', conflict: 'id' },
-  { key: 'games', table: 'games', conflict: 'id' },
-  { key: 'gamePlayers', table: 'game_players', conflict: 'game_id,person_id' },
-  { key: 'rounds', table: 'rounds', conflict: 'id' },
+  { key: 'people', table: 'people', conflict: 'id', orderBy: ['id'] },
+  { key: 'games', table: 'games', conflict: 'id', orderBy: ['id'] },
+  { key: 'gamePlayers', table: 'game_players', conflict: 'game_id,person_id', orderBy: ['game_id', 'person_id'] },
+  { key: 'rounds', table: 'rounds', conflict: 'id', orderBy: ['id'] },
 ]
 
 const ENTITY_TABLES = {
@@ -11,6 +11,8 @@ const ENTITY_TABLES = {
   gamePlayers: { table: 'game_players', keys: [['game_id', 'gameId'], ['person_id', 'personId']] },
   rounds: { table: 'rounds', keys: [['id', 'id']] },
 }
+
+const PAGE_SIZE = 1000
 
 function providerMessage(error) {
   if (error && typeof error === 'object' && 'message' in error) return error.message
@@ -28,11 +30,21 @@ async function checked(response, table) {
   return result?.data ?? null
 }
 
-async function readTable(client, { key, table }, since = null) {
-  let query = client.from(table).select('*')
-  if (since !== null) query = query.gte('updated_at', since)
-  const data = await checked(query, table)
-  return [key, Array.isArray(data) ? data : []]
+async function readTable(client, { key, table, orderBy = ['id'] }, since = null) {
+  const allRows = []
+  for (let start = 0; ; start += PAGE_SIZE) {
+    let query = client.from(table).select('*')
+    if (since !== null) query = query.gte('updated_at', since)
+    for (const column of orderBy) {
+      query = query.order(column, { ascending: true })
+    }
+    query = query.range(start, start + PAGE_SIZE - 1)
+    const data = await checked(query, table)
+    const page = Array.isArray(data) ? data : []
+    allRows.push(...page)
+    if (page.length < PAGE_SIZE) break
+  }
+  return [key, allRows]
 }
 
 function entityDefinition(entity) {
@@ -81,7 +93,9 @@ export function createCloudApi(client) {
         if (value === undefined || value === null) throw new Error(`Missing ${column} for ${definition.table} soft delete`)
         query = query.eq(column, value)
       }
-      await checked(query, definition.table)
+      const data = await checked(query.select(definition.keys.map(([column]) => column).join(',')), definition.table)
+      const matched = Array.isArray(data) ? data.length > 0 : data != null
+      if (!matched) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
     },
   }
 }

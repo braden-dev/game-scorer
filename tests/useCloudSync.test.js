@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   compactCloudMetadata,
   conservativeSyncCursor,
+  activeGameIdForSync,
   createInFlightSync,
   mergeSyncStore,
   registerSyncListeners,
@@ -33,6 +34,19 @@ test('uses a conservative cursor for updates concurrent with deferred reads', as
   const row = await read
 
   assert.ok(Date.parse(cursor) <= Date.parse(row.updated_at))
+})
+
+test('re-reads the device active game after a deferred remote read', async () => {
+  let release
+  const deferred = new Promise((resolve) => { release = resolve })
+  const stateRef = { current: { activeGameId: 'g_before' } }
+  const store = { cache: { activeGameId: 'g_cached' } }
+  const remoteRead = deferred.then(() => activeGameIdForSync(stateRef, store))
+
+  stateRef.current = { activeGameId: 'g_after_navigation' }
+  release()
+
+  assert.equal(await remoteRead, 'g_after_navigation')
 })
 
 test('advances or holds the successful cursor without drifting backward', () => {
