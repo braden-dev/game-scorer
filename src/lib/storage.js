@@ -2,9 +2,13 @@ const KEY = 'gamescorer.v1'
 
 const EMPTY = { games: [], roster: [], activeGameId: null }
 
-export function loadState() {
+function getStorage(storage) {
+  return storage ?? globalThis?.localStorage ?? globalThis?.window?.localStorage
+}
+
+export function loadState(storage = getStorage()) {
   try {
-    const raw = localStorage.getItem(KEY)
+    const raw = getStorage(storage)?.getItem(KEY)
     if (!raw) return { ...EMPTY }
     const parsed = JSON.parse(raw)
     return {
@@ -18,9 +22,9 @@ export function loadState() {
   }
 }
 
-export function saveState(state) {
+export function saveState(state, storage = getStorage()) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(state))
+    getStorage(storage)?.setItem(KEY, JSON.stringify(state))
   } catch (err) {
     console.warn('Could not save games to localStorage.', err)
   }
