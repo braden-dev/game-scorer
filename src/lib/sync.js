@@ -159,21 +159,30 @@ function childMetadata(metadata, key, gameId) {
   return metadataRecords(metadata, key).filter((record) => record.gameId === gameId)
 }
 
-function withVersion(record, updatedAt) {
+function withVersion(record, updatedAt, createdAt = undefined) {
   Object.defineProperty(record, 'updatedAt', {
     value: updatedAt,
     configurable: true,
     writable: true,
   })
+  if (createdAt !== undefined) {
+    Object.defineProperty(record, 'createdAt', {
+      value: createdAt,
+      configurable: true,
+      writable: true,
+    })
+  }
   return record
 }
 
 function serializableRecord(record) {
   const serialized = {}
   for (const key of Object.keys(record ?? {})) serialized[key] = clone(record[key])
+  const createdAt = recordField(record, 'createdAt', 'created_at')
   const updatedAt = recordField(record, 'updatedAt', 'updated_at')
   const deletedAt = recordField(record, 'deletedAt', 'deleted_at')
   if (record?.gameId !== undefined) serialized.gameId = record.gameId
+  if (createdAt !== undefined) serialized.createdAt = createdAt
   if (updatedAt !== undefined) serialized.updatedAt = updatedAt
   if (deletedAt !== undefined) serialized.deletedAt = deletedAt
   return serialized
@@ -181,8 +190,12 @@ function serializableRecord(record) {
 
 function cacheVersionEntries(cache) {
   const roster = cache.roster
-    .map((person) => ({ id: person.id, updatedAt: recordField(person, 'updatedAt', 'updated_at') }))
-    .filter((person) => person.updatedAt != null)
+    .map((person) => ({
+      id: person.id,
+      createdAt: recordField(person, 'createdAt', 'created_at'),
+      updatedAt: recordField(person, 'updatedAt', 'updated_at'),
+    }))
+    .filter((person) => person.createdAt != null || person.updatedAt != null)
   const gamePlayers = cache.games.flatMap((game) => (Array.isArray(game.players) ? game.players : [])
     .map((player) => ({
       gameId: game.id,
@@ -235,7 +248,7 @@ function restoreCache(cache, serializedMetadata) {
 
   for (const entry of Array.isArray(versions.roster) ? versions.roster : []) {
     const record = restored.roster.find((person) => person.id === entry.id)
-    if (record && entry.updatedAt != null) withVersion(record, entry.updatedAt)
+    if (record && (entry.createdAt != null || entry.updatedAt != null)) withVersion(record, entry.updatedAt, entry.createdAt)
   }
   for (const entry of Array.isArray(versions.gamePlayers) ? versions.gamePlayers : []) {
     const game = restored.games.find((candidate) => candidate.id === entry.gameId)

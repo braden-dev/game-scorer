@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fromRemoteRows } from '../src/lib/cloudState.js'
+import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
 import { loadState, saveState } from '../src/lib/storage.js'
 import {
   enqueueMutation,
@@ -312,4 +312,28 @@ test('persists cloud child versions and tombstones through a sync-store round tr
   assert.deepEqual(merged.games.map((game) => game.id), ['g_one'])
   assert.deepEqual(merged.games[0].players, [{ id: 'p_one', name: 'Local One' }])
   assert.deepEqual(merged.games[0].rounds, [{ id: 'r_one', entries: { p_one: { score: 1 } } }])
+})
+
+test('preserves player row versions and tombstones through cache persistence', () => {
+  const storage = new MemoryStorage()
+  const state = fromRemoteRows({
+    people: [
+      { id: 'p_live', name: 'Live', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'p_removed', name: 'Removed', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.300Z' },
+      { id: 'p_standalone', name: 'Standalone', created_at: '1970-01-01T00:00:00.400Z', updated_at: '1970-01-01T00:00:00.450Z' },
+    ],
+    games: [{ id: 'g_one', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.500Z', settings: {} }],
+    gamePlayers: [
+      { game_id: 'g_one', person_id: 'p_live', seat_order: 0, name_snapshot: 'Live', updated_at: '1970-01-01T00:00:00.250Z' },
+      { game_id: 'g_one', person_id: 'p_removed', seat_order: 1, name_snapshot: 'Removed Snapshot', updated_at: '1970-01-01T00:00:00.300Z', deleted_at: '1970-01-01T00:00:00.300Z' },
+    ],
+    rounds: [],
+  })
+
+  saveSyncStore({ cache: state, outbox: [], lastSyncAt: null, lastError: null, initialMigrationCompleted: false }, storage)
+  const rows = toRemoteRows(loadSyncStore(storage).cache)
+  assert.equal(rows.gamePlayers[0].updated_at, '1970-01-01T00:00:00.250Z')
+  assert.equal(rows.gamePlayers[1].deleted_at, '1970-01-01T00:00:00.300Z')
+  assert.equal(rows.gamePlayers[1].updated_at, '1970-01-01T00:00:00.300Z')
+  assert.equal(rows.people.find((person) => person.id === 'p_standalone').created_at, '1970-01-01T00:00:00.400Z')
 })

@@ -53,22 +53,36 @@ function relatedGames(rosterPersonId, games) {
   return games.filter((game) => rows(game.players).some((player) => player?.id === rosterPersonId))
 }
 
-function withVersion(record, updatedAt) {
+function withTimestamps(record, updatedAt, createdAt = undefined) {
   Object.defineProperty(record, 'updatedAt', {
     value: updatedAt,
     configurable: true,
     writable: true,
   })
+  if (createdAt !== undefined) {
+    Object.defineProperty(record, 'createdAt', {
+      value: createdAt,
+      configurable: true,
+      writable: true,
+    })
+  }
   return record
 }
 
+function withVersion(record, updatedAt) {
+  return withTimestamps(record, updatedAt)
+}
+
 function tombstoneRecord(row, id, parentId = null) {
-  return {
+  const record = {
     ...(parentId === null ? {} : { gameId: parentId }),
     id,
     updatedAt: timestamp(field(row, 'updatedAt', 'updated_at')),
     deletedAt: field(row, 'deletedAt', 'deleted_at'),
   }
+  if (row?.seat_order !== undefined) record.seatOrder = row.seat_order
+  if (row?.name_snapshot !== undefined) record.nameSnapshot = row.name_snapshot
+  return record
 }
 
 function setMetadata(state, metadata) {
@@ -77,6 +91,10 @@ function setMetadata(state, metadata) {
     configurable: true,
   })
   return state
+}
+
+function metadataRecords(metadata, key) {
+  return rows(metadata?.[key])
 }
 
 function childPlayerMetadata(player, peopleById) {
@@ -95,6 +113,29 @@ function childRoundMetadata(round) {
   }, timestamp(field(round, 'updatedAt', 'updated_at')))
 }
 
+function latestPlayerTombstone(metadata, gameId, personId) {
+  return metadataRecords(metadata, 'gamePlayers')
+    .filter((record) => record.gameId === gameId && record.id === personId && isTombstone(record))
+    .reduce((latest, record) => {
+      if (!latest) return record
+      const latestVersion = timestamp(field(latest, 'deletedAt', 'deleted_at')) ?? timestamp(field(latest, 'updatedAt', 'updated_at')) ?? 0
+      const recordVersion = timestamp(field(record, 'deletedAt', 'deleted_at')) ?? timestamp(field(record, 'updatedAt', 'updated_at')) ?? 0
+      return recordVersion >= latestVersion ? record : latest
+    }, null)
+}
+
+function playerVersion(player, game) {
+  return timestamp(field(player, 'updatedAt', 'updated_at'))
+    ?? timestamp(field(game, 'updatedAt', 'updated_at'))
+    ?? 0
+}
+
+function tombstoneVersion(tombstone) {
+  return timestamp(field(tombstone, 'deletedAt', 'deleted_at'))
+    ?? timestamp(field(tombstone, 'updatedAt', 'updated_at'))
+    ?? 0
+}
+
 export function normalizeName(name) {
   return String(name ?? '').trim().toLocaleLowerCase()
 }
@@ -102,6 +143,7 @@ export function normalizeName(name) {
 export function toRemoteRows(state) {
   const roster = rows(state?.roster)
   const sourceGames = rows(state?.games)
+  const metadata = state?.[CLOUD_METADATA] ?? {}
 
   const games = sourceGames.map((game) => ({
     id: game.id,
@@ -137,14 +179,39 @@ export function toRemoteRows(state) {
     }
   })
 
-  const gamePlayers = sourceGames.flatMap((game) => rows(game.players).map((player, seatOrder) => ({
-    game_id: game.id,
-    person_id: player.id,
-    seat_order: seatOrder,
-    name_snapshot: player.name,
-    updated_at: isoTimestamp(field(game, 'updatedAt', 'updated_at'), true),
-    deleted_at: null,
-  })))
+  const gamePlayers = sourceGames.flatMap((game) => {
+    const players = rows(game.players)
+    const tombstones = metadataRecords(metadata, 'gamePlayers')
+      .filter((record) => record.gameId === game.id && isTombstone(record))
+    const currentIds = new Set(players.map((player) => player.id))
+    const liveRows = players.map((player, seatOrder) => {
+      const tombstone = latestPlayerTombstone(metadata, game.id, player.id)
+      const liveVersion = playerVersion(player, game)
+      const deleted = tombstone && tombstoneVersion(tombstone) >= liveVersion ? tombstone : null
+      return {
+        game_id: game.id,
+        person_id: player.id,
+        seat_order: seatOrder,
+        name_snapshot: player.name,
+        updated_at: isoTimestamp(
+          deleted ? field(deleted, 'updatedAt', 'updated_at') ?? field(deleted, 'deletedAt', 'deleted_at') : field(player, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
+          true,
+        ),
+        deleted_at: isoTimestamp(deleted ? field(deleted, 'deletedAt', 'deleted_at') : field(player, 'deletedAt', 'deleted_at')),
+      }
+    })
+    const deletedRows = tombstones
+      .filter((tombstone) => !currentIds.has(tombstone.id))
+      .map((tombstone) => ({
+        game_id: game.id,
+        person_id: tombstone.id,
+        seat_order: tombstone.seatOrder ?? 0,
+        name_snapshot: tombstone.nameSnapshot ?? roster.find((person) => person.id === tombstone.id)?.name ?? 'Unknown',
+        updated_at: isoTimestamp(field(tombstone, 'updatedAt', 'updated_at') ?? field(tombstone, 'deletedAt', 'deleted_at'), true),
+        deleted_at: isoTimestamp(field(tombstone, 'deletedAt', 'deleted_at')),
+      }))
+    return [...liveRows, ...deletedRows]
+  })
 
   const rounds = sourceGames.flatMap((game) => rows(game.rounds).map((round, roundIndex) => ({
     id: round.id,
@@ -183,9 +250,10 @@ export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, acti
     roundsByGameId.set(round.game_id, roundsForGame)
   }
 
-  const roster = visiblePeople.map((person) => withVersion(
+  const roster = visiblePeople.map((person) => withTimestamps(
     { id: person.id, name: person.name },
     timestamp(field(person, 'updatedAt', 'updated_at')),
+    timestamp(field(person, 'createdAt', 'created_at')),
   ))
   const nestedGames = visibleGames.map((game) => {
     const players = (playersByGameId.get(game.id) ?? [])
