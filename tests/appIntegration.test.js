@@ -80,8 +80,13 @@ function persistStore(updates = {}) {
 }
 const api = globalThis.__scorebookIntegrationCloudApi ??= {
   mutations: [],
+  softDeletes: [],
+  restoreCalls: [],
   failFetch: false,
   failUpsert: false,
+  deleteGate: null,
+  preserveExplicitUpdatedAt: false,
+  serverUpdatedAt: null,
   async fetchSnapshot() {
     if (this.failFetch) throw new Error('snapshot unavailable')
     return { people: [], games: [], gamePlayers: [], rounds: [] }
@@ -89,6 +94,26 @@ const api = globalThis.__scorebookIntegrationCloudApi ??= {
   async upsertRows(rows, mutation) {
     if (this.failUpsert) throw new Error('migration upload unavailable')
     this.mutations.push({ rows, initialMigration: mutation.initialMigration })
+  },
+  async softDelete(entity, entityId, updatedAt) {
+    this.softDeletes.push({ entity, entityId, updatedAt })
+    if (this.deleteGate) await this.deleteGate
+    this.serverUpdatedAt = this.preserveExplicitUpdatedAt
+      ? new Date(updatedAt).toISOString()
+      : '2026-08-04T00:00:10.000Z'
+    return {
+      id: typeof entityId === 'object' ? entityId.id : entityId,
+      updated_at: this.serverUpdatedAt,
+      deleted_at: updatedAt,
+    }
+  },
+  async restoreRows(rows, expectedTombstones) {
+    this.restoreCalls.push({ rows, expectedTombstones })
+    const expected = expectedTombstones?.games?.[0]
+    if (this.serverUpdatedAt && expected?.updated_at !== this.serverUpdatedAt) {
+      throw new Error('restore conflict: tombstone version changed')
+    }
+    return rows
   },
 }
 export const CONFLICT_MESSAGE = 'This was changed on another device. The shared version is now shown.'
@@ -125,8 +150,14 @@ export function useCloudSync() {
       return { ok: true, fullSnapshot: true }
     }
     try {
-      await api.upsertRows(mutation.payload.rows, mutation)
-      state.outbox.shift()
+      if (mutation.operation === 'softDelete') {
+        await api.softDelete(mutation.entity, mutation.entityId, mutation.updatedAt)
+      } else if (mutation.operation === 'restore') {
+        await api.restoreRows(mutation.payload.rows, mutation.restore)
+      } else {
+        await api.upsertRows(mutation.payload.rows, mutation)
+      }
+      if (state.outbox[0]?.id === mutation.id) state.outbox.shift()
       state.status = 'synced'
       state.lastError = null
     } catch (error) {
@@ -198,6 +229,21 @@ async function loadAppForIntegrationTest() {
   return (await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)).default
 }
 
+function childrenOf(element) {
+  const children = element?.props?.children
+  return Array.isArray(children) ? children : [children]
+}
+
+function findElement(element, predicate) {
+  if (!element || typeof element !== 'object') return null
+  if (predicate(element)) return element
+  for (const child of childrenOf(element)) {
+    const match = findElement(child, predicate)
+    if (match) return match
+  }
+  return null
+}
+
 test('persists the next nested state in the cloud cache without uploading activeGameId', () => {
   const storage = new MemoryStorage()
   saveState({ games: [{ id: 'legacy' }], roster: [] }, storage)
@@ -243,6 +289,77 @@ test('does not offer migration for a device that started without local data', ()
     hadLocalDataAtStartup: true,
     initialMigrationCompleted: false,
   }), true)
+})
+
+test('restores an in-flight game Undo after the serialized delete returns', async () => {
+  const App = await loadAppForIntegrationTest()
+  const storage = new MemoryStorage()
+  saveState({
+    activeGameId: null,
+    roster: [{ id: 'p_local', name: 'Local Player' }],
+    games: [{
+      id: 'g_inflight_undo',
+      gameId: 'farkle',
+      createdAt: 1,
+      updatedAt: 2,
+      players: [{ id: 'p_local', name: 'Local Player' }],
+      settings: {},
+      rounds: [],
+      finishedAt: null,
+    }],
+  }, storage)
+  storage.setItem('gamescorer.cloud.v1', JSON.stringify({ initialMigrationCompleted: true, outbox: [] }))
+  globalThis.localStorage = storage
+  globalThis.window = {
+    location: { pathname: '/' },
+    matchMedia: () => ({ matches: false }),
+    navigator: { onLine: true, standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+    confirm: () => true,
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: globalThis.window.navigator })
+  globalThis.__scorebookIntegrationReactControl.reset()
+  globalThis.__scorebookIntegrationSync.outbox = []
+  globalThis.__scorebookIntegrationSync.status = 'synced'
+  globalThis.__scorebookIntegrationSync.lastError = null
+  globalThis.__scorebookIntegrationCloudApi.softDeletes = []
+  globalThis.__scorebookIntegrationCloudApi.restoreCalls = []
+  globalThis.__scorebookIntegrationCloudApi.serverUpdatedAt = null
+  // The follow-up SQL migration is installed: explicit application versions
+  // survive the soft-delete trigger instead of being replaced by now().
+  globalThis.__scorebookIntegrationCloudApi.preserveExplicitUpdatedAt = true
+  let releaseDelete
+  globalThis.__scorebookIntegrationCloudApi.deleteGate = new Promise((resolve) => { releaseDelete = resolve })
+
+  globalThis.__scorebookIntegrationReactControl.begin()
+  const initial = App()
+  await globalThis.__scorebookIntegrationReactControl.flushEffects()
+  const homeElement = initial.props.content.props.children[0]
+  const homeTree = homeElement.type(homeElement.props)
+  const gameCard = findElement(homeTree, (element) => element.type?.name === 'GameCard')
+  const deleteButton = findElement(gameCard.type(gameCard.props), (element) => element.props?.['aria-label'] === 'Delete Farkle game')
+  deleteButton.props.onClick()
+
+  const deleteSync = globalThis.__scorebookIntegrationSync.syncNow()
+  globalThis.__scorebookIntegrationReactControl.begin()
+  const afterDelete = App()
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  findElement(toast, (element) => element.type === 'button' && element.props.children === 'Undo').props.onClick()
+
+  releaseDelete()
+  await deleteSync
+  await globalThis.__scorebookIntegrationSync.syncNow()
+
+  const store = loadSyncStore()
+  assert.equal(globalThis.__scorebookIntegrationCloudApi.softDeletes.length, 1)
+  assert.equal(globalThis.__scorebookIntegrationCloudApi.restoreCalls.length, 1)
+  assert.equal(
+    globalThis.__scorebookIntegrationCloudApi.restoreCalls[0].expectedTombstones.games[0].updated_at,
+    globalThis.__scorebookIntegrationCloudApi.serverUpdatedAt,
+  )
+  assert.equal(store.outbox.length, 0)
+  assert.equal(store.lastError, null)
 })
 
 test('aborts initial migration when the cloud snapshot fails, then retries without remounting', async () => {

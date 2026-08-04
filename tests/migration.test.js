@@ -9,6 +9,10 @@ const migrationPath = path.resolve(
   '../supabase/migrations/20260804000100_create_scorebook.sql',
 )
 const migration = fs.readFileSync(migrationPath, 'utf8')
+const timestampMigrationPath = path.resolve(
+  path.dirname(migrationPath),
+  '20260804000200_preserve_explicit_updated_at.sql',
+)
 
 function assertLiveRoundPositions(rows) {
   const liveKeys = rows
@@ -60,7 +64,16 @@ test('migration validation command includes linked lint and transactional local 
   )
 
   assert.match(validationScript, /\['db', 'lint', '--linked'\]/)
+  assert.match(validationScript, /20260804000200_preserve_explicit_updated_at\.sql/)
   assert.match(validationScript, /Run the migration twice in one transaction/)
   assert.match(validationScript, /ROLLBACK;/)
   assert.match(validationScript, /live\/tombstone round-index behavior/)
+})
+
+test('follow-up timestamp migration preserves explicit application versions and is rerun-safe', () => {
+  const timestampMigration = fs.readFileSync(timestampMigrationPath, 'utf8')
+  assert.match(timestampMigration, /create\s+or\s+replace\s+function\s+public\.set_updated_at\s*\(\)/i)
+  assert.match(timestampMigration, /if\s+new\.updated_at\s+is\s+null\s+or\s+new\.updated_at\s*=\s+old\.updated_at/i)
+  assert.match(timestampMigration, /new\.updated_at\s*=\s+now\(\)/i)
+  assert.equal((timestampMigration.match(/create\s+or\s+replace\s+function/gi) ?? []).length, 1)
 })

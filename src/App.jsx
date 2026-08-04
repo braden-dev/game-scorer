@@ -115,9 +115,6 @@ export default function App() {
   const [newGameId, setNewGameId] = useState(null)
   const [route, setRoute] = useState(() => readRoute())
   const [showData, setShowData] = useState(false)
-  const [initialMigrationCompleted, setInitialMigrationCompleted] = useState(
-    () => loadSyncStore().initialMigrationCompleted,
-  )
   const stateRef = useRef(state)
   const migrationStartedRef = useRef(false)
   const migrationRetryBlockedRef = useRef(null)
@@ -565,7 +562,6 @@ export default function App() {
     const pendingMigration = reconciledStore.outbox.find((mutation) => mutation.initialMigration)
     if (existingMigration && !pendingMigration) {
       sync.updateSyncStore({ initialMigrationCompleted: true })
-      setInitialMigrationCompleted(true)
       return
     }
     const migrationId = pendingMigration?.id ?? existingMigration?.id ?? uid('migration')
@@ -599,7 +595,6 @@ export default function App() {
     }
 
     sync.updateSyncStore({ initialMigrationCompleted: true })
-    setInitialMigrationCompleted(true)
   }
 
   useEffect(() => {

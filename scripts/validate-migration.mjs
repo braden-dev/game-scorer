@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url'
 
 const scriptPath = fileURLToPath(import.meta.url)
 const repoRoot = resolve(dirname(scriptPath), '..')
-const migrationPath = resolve(repoRoot, 'supabase/migrations/20260804000100_create_scorebook.sql')
+const migrationPaths = [
+  resolve(repoRoot, 'supabase/migrations/20260804000100_create_scorebook.sql'),
+  resolve(repoRoot, 'supabase/migrations/20260804000200_preserve_explicit_updated_at.sql'),
+]
 const linkedProjectRefPath = resolve(repoRoot, 'supabase/.temp/project-ref')
 
 function findExecutable(name) {
@@ -162,7 +165,7 @@ async function validateLocalSql(migration) {
 }
 
 try {
-  const migration = await readFile(migrationPath, 'utf8')
+  const migration = (await Promise.all(migrationPaths.map((migrationPath) => readFile(migrationPath, 'utf8')))).join('\n')
   assertMigrationShape(migration)
   console.log('Migration SQL validation')
   validateLinkedLint()
