@@ -30,8 +30,10 @@ compare-and-set checks, and refreshes the shared version when another device win
 remains the long-term backup. Shared scorebook rows are intentionally public and editable by
 anyone using the configured publishable key.
 
-The first cloud-enabled visit offers to publish existing local history. Before applying the
-database migration, validate it locally or against the linked project:
+When cloud sync is configured, existing local history is automatically queued for publication after
+the first successful full cloud snapshot. This proceeds quietly and retries after temporary offline
+or sync failures. Before applying the database migration, validate it locally or against the linked
+project:
 
 ```bash
 npm run validate:migration
