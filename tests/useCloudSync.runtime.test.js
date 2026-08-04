@@ -621,9 +621,9 @@ test('surfaces a conflict when a deleted round changes before Undo restore', asy
     })
 
     const stored = loadSyncStore(globalThis.localStorage)
-    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(observed.hook.error, 'Sync conflict; local changes kept. Retry when ready.')
     assert.equal(stored.outbox[0].status, 'conflict')
-    assert.equal(stored.outbox[0].error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(stored.outbox[0].error, 'Sync conflict; local changes kept. Retry when ready.')
     assert.deepEqual(client.rows('rounds')[0].entries, { p_one: { score: 99 } })
   } finally {
     await act(async () => { root.unmount() })
@@ -802,9 +802,9 @@ test('surfaces a conflict when a deleted player membership changes before Undo r
     })
 
     const stored = loadSyncStore(globalThis.localStorage)
-    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(observed.hook.error, 'Sync conflict; local changes kept. Retry when ready.')
     assert.equal(stored.outbox[0].status, 'conflict')
-    assert.equal(stored.outbox[0].error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(stored.outbox[0].error, 'Sync conflict; local changes kept. Retry when ready.')
     assert.equal(client.rows('game_players')[0].name_snapshot, 'Another Device')
   } finally {
     await act(async () => { root.unmount() })
@@ -855,6 +855,20 @@ test('refreshes the shared row and records a CAS conflict without keeping it pen
   const browser = browserHarness()
   const useCloudSync = await loadHook()
   const serverUpdatedAt = '2026-01-04T00:00:00.000Z'
+  const localState = {
+    activeGameId: null,
+    roster: [{ id: 'p_local', name: 'Local' }],
+    games: [{
+      id: 'g_conflict',
+      gameId: 'farkle',
+      createdAt: Date.parse('2026-01-01T00:00:00.000Z'),
+      updatedAt: Date.parse('2026-01-03T00:00:00.000Z'),
+      players: [{ id: 'p_local', name: 'Local', seatOrder: 0 }],
+      rounds: [],
+      settings: {},
+      finishedAt: null,
+    }],
+  }
   let snapshotCalls = 0
   const sharedRows = {
     people: [],
@@ -876,9 +890,10 @@ test('refreshes the shared row and records a CAS conflict without keeping it pen
     upsertRows: async () => { throw new Error('Supabase games: stale mutation; newer remote row exists') },
     softDelete: async () => {},
   }
-  const observed = { hook: null, updates: [] }
+  const observed = { hook: null, state: null, updates: [] }
   function Harness() {
-    observed.hook = useCloudSync({ activeGameId: null, games: [], roster: [] }, (nextState) => {
+    observed.hook = useCloudSync(localState, (nextState) => {
+      observed.state = nextState
       observed.updates.push(nextState)
     }, { configured: true, api })
     return null
@@ -904,23 +919,32 @@ test('refreshes the shared row and records a CAS conflict without keeping it pen
               finished_at: null,
               deleted_at: null,
             }],
-            gamePlayers: [],
+            gamePlayers: [{
+              game_id: 'g_conflict',
+              person_id: 'p_local',
+              seat_order: 0,
+              name_snapshot: 'Local',
+              updated_at: '2026-01-03T00:00:00.000Z',
+              deleted_at: null,
+            }],
             rounds: [],
           },
         },
+        state: localState,
       })
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
     assert.ok(snapshotCalls >= 2)
-    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(observed.state.games[0].id, 'g_conflict')
+    assert.equal(observed.state.games[0].players[0].id, 'p_local')
     assert.equal(observed.hook.pendingCount, 0)
     assert.equal(observed.updates.at(-1).games[0].updatedAt, Date.parse(serverUpdatedAt))
     const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
     assert.equal(stored.outbox.length, 1)
     assert.equal(stored.outbox[0].id, 'm_conflict')
     assert.equal(stored.outbox[0].status, 'conflict')
-    assert.equal(stored.outbox[0].error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(stored.outbox[0].error, 'Sync conflict; local changes kept. Retry when ready.')
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
@@ -969,13 +993,13 @@ test('continues replay after a CAS conflict while retaining the conflict error s
 
     assert.equal(upsertPayloads.length, 2)
     assert.equal(upsertPayloads[1].people[0].id, 'p_after')
-    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(observed.hook.error, 'Sync conflict; local changes kept. Retry when ready.')
     assert.equal(observed.hook.pendingCount, 0)
     const stored = loadSyncStore(globalThis.localStorage)
     assert.equal(stored.outbox.length, 1)
     assert.equal(stored.outbox[0].id, 'm_conflict_first')
     assert.equal(stored.outbox[0].status, 'conflict')
-    assert.equal(stored.lastError, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(stored.lastError, 'Sync conflict; local changes kept. Retry when ready.')
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
