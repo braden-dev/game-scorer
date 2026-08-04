@@ -447,6 +447,17 @@ test('accepts a scalar delete retry when the desired tombstone has a newer serve
   assert.deepEqual(client.rows('rounds'), [canonical])
 })
 
+test('accepts a scalar delete retry when deleted_at matches despite server clock skew', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const canonical = { id: 'r_skewed', game_id: 'g_skewed', updated_at: '2026-01-01T23:59:00.000Z', deleted_at: deletedAt }
+  const client = mutableClient({ rounds: [canonical] })
+
+  const result = await createCloudApi(client).softDelete('rounds', 'r_skewed', deletedAt)
+
+  assert.deepEqual(result, canonical)
+  assert.deepEqual(client.rows('rounds'), [canonical])
+})
+
 test('accepts a composite delete retry when the desired tombstone has a newer server updated_at', async () => {
   const deletedAt = '2026-01-02T00:00:00.000Z'
   const serverAt = '2026-01-02T00:00:01.000Z'

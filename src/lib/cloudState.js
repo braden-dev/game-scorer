@@ -109,6 +109,16 @@ function tombstoneRecord(row, id, parentId = null) {
     updatedAt: timestamp(field(row, 'updatedAt', 'updated_at')),
     deletedAt: field(row, 'deletedAt', 'deleted_at'),
   }
+  if (row?.name !== undefined) record.name = row.name
+  if (row?.normalized_name !== undefined) record.normalizedName = row.normalized_name
+  if (row?.created_at !== undefined || row?.createdAt !== undefined) {
+    record.createdAt = timestamp(field(row, 'createdAt', 'created_at'))
+  }
+  if (parentId === null && row?.game_id !== undefined) record.gameId = row.game_id
+  if (row?.settings !== undefined) record.settings = row.settings
+  if (row?.finished_at !== undefined || row?.finishedAt !== undefined) {
+    record.finishedAt = timestamp(field(row, 'finishedAt', 'finished_at'))
+  }
   if (row?.seat_order !== undefined) record.seatOrder = row.seat_order
   if (row?.name_snapshot !== undefined) record.nameSnapshot = row.name_snapshot
   if (row?.round_index !== undefined) record.roundIndex = row.round_index
@@ -193,12 +203,14 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = nul
 
   if (group === 'people') {
     const personId = mutationPart(id, 'id', 'id')
+    const priorPerson = nextRoster.find((person) => person.id === personId)
     nextRoster = nextRoster.filter((person) => person.id !== personId)
-    nextMetadata.roster = addCloudTombstone(nextMetadata, 'roster', { ...tombstone, id: personId })
+    nextMetadata.roster = addCloudTombstone(nextMetadata, 'roster', { ...priorPerson, ...tombstone, id: personId })
   } else if (group === 'games') {
     const gameId = mutationPart(id, 'id', 'id')
+    const priorGame = nextGames.find((game) => game.id === gameId)
     nextGames = nextGames.filter((game) => game.id !== gameId)
-    nextMetadata.games = addCloudTombstone(nextMetadata, 'games', { ...tombstone, id: gameId })
+    nextMetadata.games = addCloudTombstone(nextMetadata, 'games', { ...priorGame, ...tombstone, id: gameId })
   } else if (group === 'gamePlayers' || group === 'rounds') {
     const roundDetails = group === 'rounds' && details && typeof details === 'object' ? details : null
     const requestedId = mutationPart(id, group === 'gamePlayers' ? 'personId' : 'id', group === 'gamePlayers' ? 'person_id' : 'id')
@@ -313,8 +325,10 @@ export function toRemoteRows(state) {
   const roster = rows(state?.roster)
   const sourceGames = rows(state?.games)
   const metadata = state?.[CLOUD_METADATA] ?? {}
+  const livePersonIds = new Set(roster.map((person) => person.id))
+  const liveGameIds = new Set(sourceGames.map((game) => game.id))
 
-  const games = sourceGames.map((game) => ({
+  const liveGames = sourceGames.map((game) => ({
     id: game.id,
     game_id: game.gameId,
     created_at: isoTimestamp(field(game, 'createdAt', 'created_at'), true),
@@ -323,8 +337,23 @@ export function toRemoteRows(state) {
     settings: game.settings ?? {},
     deleted_at: isoTimestamp(field(game, 'deletedAt', 'deleted_at')),
   }))
+  const deletedGames = metadataRecords(metadata, 'games')
+    .filter((game) => isTombstone(game) && !liveGameIds.has(game.id))
+    .map((game) => ({
+      id: game.id,
+      game_id: field(game, 'gameId', 'game_id') ?? null,
+      created_at: isoTimestamp(field(game, 'createdAt', 'created_at'), true),
+      updated_at: isoTimestamp(
+        field(game, 'updatedAt', 'updated_at') ?? field(game, 'deletedAt', 'deleted_at'),
+        true,
+      ),
+      finished_at: isoTimestamp(field(game, 'finishedAt', 'finished_at')),
+      settings: game.settings ?? {},
+      deleted_at: isoTimestamp(field(game, 'deletedAt', 'deleted_at')),
+    }))
+  const games = [...liveGames, ...deletedGames]
 
-  const people = roster.map((person) => {
+  const livePeople = roster.map((person) => {
     const related = relatedGames(person.id, sourceGames)
     const createdAt = timestamp(field(person, 'createdAt', 'created_at'))
       ?? related.reduce((earliest, game) => {
@@ -347,6 +376,20 @@ export function toRemoteRows(state) {
       deleted_at: isoTimestamp(field(person, 'deletedAt', 'deleted_at')),
     }
   })
+  const deletedPeople = metadataRecords(metadata, 'roster')
+    .filter((person) => isTombstone(person) && !livePersonIds.has(person.id))
+    .map((person) => ({
+      id: person.id,
+      name: person.name ?? '',
+      normalized_name: person.normalizedName ?? normalizeName(person.name),
+      created_at: isoTimestamp(field(person, 'createdAt', 'created_at'), true),
+      updated_at: isoTimestamp(
+        field(person, 'updatedAt', 'updated_at') ?? field(person, 'deletedAt', 'deleted_at'),
+        true,
+      ),
+      deleted_at: isoTimestamp(field(person, 'deletedAt', 'deleted_at')),
+    }))
+  const people = [...livePeople, ...deletedPeople]
 
   const gamePlayers = sourceGames.flatMap((game) => {
     const players = rows(game.players)

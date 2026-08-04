@@ -218,13 +218,12 @@ export function createCloudApi(client) {
       if (!existing) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
       const existingVersion = rowVersion(existing)
       const requestedVersionValue = requestedVersion ?? Number.NEGATIVE_INFINITY
+      if (requestedVersion !== null && timestamp(existing.deleted_at) === requestedVersion) return existing
       if (existingVersion > requestedVersionValue) {
-        if (timestamp(existing.deleted_at) === requestedVersion) return existing
         throw conflictError(definition.table)
       }
       if (Number.isFinite(requestedVersion) && existingVersion === requestedVersion) {
         const alreadyDeleted = timestamp(existing.deleted_at) === requestedVersion
-          && timestamp(existing.updated_at) === requestedVersion
         if (alreadyDeleted) return existing
         throw equalVersionConflictError(definition.table)
       }

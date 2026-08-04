@@ -130,6 +130,46 @@ test('round-trips deleted round metadata after the visible round is removed', ()
   assert.deepEqual(toRemoteRows(fromRemoteRows(rows)).rounds, [sourceRows.rounds[0]])
 })
 
+test('round-trips metadata-only person and game tombstones without duplicating live rows', () => {
+  const sourceRows = {
+    people: [
+      {
+        id: 'p_live', name: 'Live', normalized_name: 'live',
+        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
+      },
+      {
+        id: 'p_deleted', name: 'Deleted', normalized_name: 'deleted',
+        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-03T00:00:00.000Z',
+        deleted_at: '2026-01-03T00:00:00.000Z',
+      },
+    ],
+    games: [
+      {
+        id: 'g_live', game_id: 'farkle', created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-02T00:00:00.000Z', finished_at: null, settings: { target: 100 }, deleted_at: null,
+      },
+      {
+        id: 'g_deleted', game_id: 'yahtzee', created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-03T00:00:00.000Z', finished_at: '2026-01-03T00:00:01.000Z',
+        settings: { target: 50 }, deleted_at: '2026-01-03T00:00:00.000Z',
+      },
+    ],
+    gamePlayers: [],
+    rounds: [],
+  }
+
+  const rows = toRemoteRows(fromRemoteRows(sourceRows))
+
+  assert.deepEqual(rows.people, sourceRows.people)
+  assert.deepEqual(rows.games, sourceRows.games)
+  assert.equal(rows.people.filter((person) => person.id === 'p_live').length, 1)
+  assert.equal(rows.people.filter((person) => person.id === 'p_deleted').length, 1)
+  assert.equal(rows.games.filter((game) => game.id === 'g_live').length, 1)
+  assert.equal(rows.games.filter((game) => game.id === 'g_deleted').length, 1)
+  assert.deepEqual(toRemoteRows(fromRemoteRows(rows)).people, sourceRows.people)
+  assert.deepEqual(toRemoteRows(fromRemoteRows(rows)).games, sourceRows.games)
+})
+
 test('emits preserved local round data when recording a parent-keyed tombstone', () => {
   const deletedAt = '2026-01-03T00:00:02.000Z'
   const cache = {
