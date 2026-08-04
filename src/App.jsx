@@ -173,11 +173,14 @@ export default function App() {
     }
     undoRef.current = null
     setUndoAction(null)
-    if (action.mutationId) sync.cancelSyncMutations?.((mutation) => mutation.id === action.mutationId)
+    const mutationIds = action.mutationIds ?? (action.mutationId ? [action.mutationId] : [])
+    if (mutationIds.length) sync.cancelSyncMutations?.((mutation) => mutationIds.includes(mutation.id))
 
     const restoreExpected = action.kind === 'round'
       ? restoreExpectedTombstone('rounds', action.round.id, action.gameId, action.deletedAt)
-      : restoreExpectedTombstone('games', action.game.id, null, action.deletedAt)
+      : action.kind === 'player'
+        ? restoreExpectedTombstone('game_players', action.player.id, action.gameId, action.deletedAt)
+        : restoreExpectedTombstone('games', action.game.id, null, action.deletedAt)
     const restoreMutation = (nextState, previousState, options, entity) => ({
       ...stateChangeMutation(nextState, previousState, options),
       operation: 'restore',
@@ -193,7 +196,19 @@ export default function App() {
           true,
         ),
       }, 'rounds')
-      : (nextState, previousState) => restoreMutation(nextState, previousState, undefined, 'games')
+      : action.kind === 'player'
+        ? (nextState, previousState) => {
+          const previousGame = previousState.games.find((candidate) => candidate.id === action.gameId)
+          const nextGame = nextState.games.find((candidate) => candidate.id === action.gameId)
+          const includeGame = comparableGameMetadata(previousGame) !== comparableGameMetadata(nextGame)
+          return restoreMutation(nextState, previousState, {
+            gameId: action.gameId,
+            includeGame,
+            playerIds: changedRecordIds(previousGame?.players ?? [], nextGame?.players ?? [], true),
+            roundIds: changedRecordIds(previousGame?.rounds ?? [], nextGame?.rounds ?? [], true),
+          }, 'gamePlayers')
+        }
+        : (nextState, previousState) => restoreMutation(nextState, previousState, undefined, 'games')
     applyMutation((previous) => {
       if (action.kind === 'game') {
         if (previous.games.some((game) => game.id === action.game.id)) return previous
@@ -209,7 +224,33 @@ export default function App() {
       }
 
       const game = previous.games.find((candidate) => candidate.id === action.gameId)
-      if (!game || game.rounds.some((round) => round.id === action.round.id)) return previous
+      if (!game) return previous
+      if (action.kind === 'player') {
+        if (game.players.some((player) => player.id === action.player.id)) return previous
+        const restoreAt = Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1)
+        const restoredPlayer = snapshot(action.player)
+        restoredPlayer.updatedAt = restoreAt
+        const players = game.players.slice()
+        players.splice(Math.min(action.playerIndex, players.length), 0, restoredPlayer)
+        const restoredMetadata = action.gameSnapshot ? snapshot(action.gameSnapshot) : game
+        const snapshotRounds = new Map((restoredMetadata.rounds ?? []).map((round) => [round.id, round]))
+        const rounds = game.rounds.map((round) => {
+          const snapshotRound = snapshotRounds.get(round.id)
+          const restoredEntry = snapshotRound?.entries?.[action.player.id]
+          if (restoredEntry === undefined) return round
+          return {
+            ...round,
+            entries: { ...round.entries, [action.player.id]: snapshot(restoredEntry) },
+            updatedAt: Math.max(restoreAt, (Number(round.updatedAt) || 0) + 1),
+          }
+        })
+        const metadataChanged = comparableGameMetadata(game) !== comparableGameMetadata(restoredMetadata)
+        const updatedGame = metadataChanged
+          ? revivedGame({ ...restoredMetadata, players, rounds }, action.deletedAt)
+          : { ...game, players, rounds }
+        return { ...previous, games: previous.games.map((candidate) => candidate.id === game.id ? updatedGame : candidate) }
+      }
+      if (game.rounds.some((round) => round.id === action.round.id)) return previous
       const rounds = game.rounds.slice()
       const restoredRound = snapshot(action.round)
       restoredRound.updatedAt = Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1)
@@ -302,6 +343,14 @@ export default function App() {
     const removedRoundIndex = removedRound ? previousGame.rounds.indexOf(removedRound) : -1
     const removedRoundMutationId = removedRound ? uid('m') : null
     const roundTimestamp = Date.now()
+    const removedPlayers = previousGame?.players?.filter(
+      (player) => !updated.players.some((candidate) => candidate.id === player.id),
+    ) ?? []
+    const removedPlayerMutationIds = new Map(removedPlayers.map((player) => [player.id, uid('m')]))
+    let playerRemovalStateMutationId = null
+    const playerDeleteTimestamp = removedPlayers.length
+      ? Math.max(roundTimestamp, ...removedPlayers.map((player) => (Number(player.updatedAt) || 0) + 1))
+      : null
     const candidateFinishedAt = status.finished
       ? (updated.finishedAt || previousGame?.finishedAt || null)
       : null
@@ -365,9 +414,6 @@ export default function App() {
         const removedRound = previousGame?.rounds?.find(
           (round) => !next.rounds.some((candidate) => candidate.id === round.id),
         )
-        const removedPlayers = previousGame?.players?.filter(
-          (player) => !next.players.some((candidate) => candidate.id === player.id),
-        ) ?? []
         const mutations = []
         if (removedRound) mutations.push({
           id: removedRoundMutationId,
@@ -381,18 +427,12 @@ export default function App() {
             entries: removedRound.entries,
           },
         })
-        mutations.push(stateChangeMutation(nextState, previousState, {
-          gameId: next.id,
-          includeGame,
-          playerIds: changedPlayerIds,
-          roundIds: changedRoundIds,
-        }))
         mutations.push(...removedPlayers.map((player) => ({
-          id: uid('m'),
+          id: removedPlayerMutationIds.get(player.id),
           entity: 'game_players',
           entityId: { gameId: next.id, personId: player.id },
           operation: 'softDelete',
-          updatedAt: next.updatedAt,
+          updatedAt: playerDeleteTimestamp,
           payload: {
             gameId: next.id,
             personId: player.id,
@@ -400,6 +440,14 @@ export default function App() {
             nameSnapshot: player.name,
           },
         })))
+        const stateMutation = stateChangeMutation(nextState, previousState, {
+          gameId: next.id,
+          includeGame,
+          playerIds: changedPlayerIds,
+          roundIds: changedRoundIds,
+        })
+        if (removedPlayers.length === 1) playerRemovalStateMutationId = stateMutation.id
+        mutations.push(stateMutation)
         return mutations.length === 1 ? mutations[0] : mutations
       },
     )
@@ -412,6 +460,18 @@ export default function App() {
         roundIndex: removedRoundIndex,
         deletedAt: next.updatedAt,
         mutationId: removedRoundMutationId,
+      })
+    } else if (removedPlayers.length === 1 && previousGame) {
+      const removedPlayer = removedPlayers[0]
+      showUndo({
+        kind: 'player',
+        gameId: next.id,
+        gameSnapshot: snapshot(previousGame),
+        player: snapshot(removedPlayer),
+        playerIndex: previousGame.players.indexOf(removedPlayer),
+        deletedAt: playerDeleteTimestamp,
+        mutationId: removedPlayerMutationIds.get(removedPlayer.id),
+        mutationIds: [removedPlayerMutationIds.get(removedPlayer.id), playerRemovalStateMutationId].filter(Boolean),
       })
     }
   }
@@ -496,7 +556,9 @@ export default function App() {
   const undoToast = undoAction && (
     <UndoToast
       key={undoAction.id}
-      message={`${undoAction.kind === 'game' ? 'Game deleted.' : 'Round deleted.'} Undo is available for 10 seconds.`}
+      message={`${undoAction.kind === 'game'
+        ? 'Game deleted.'
+        : undoAction.kind === 'player' ? 'Player removed.' : 'Round deleted.'} Undo is available for 10 seconds.`}
       onUndo={undo}
       onExpire={() => expireUndo(undoAction.id)}
     />

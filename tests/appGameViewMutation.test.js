@@ -618,25 +618,127 @@ test('GameView player removal reaches App and queues a join-row tombstone', asyn
 
   const mutations = globalThis.__scorebookTestSync.mutations
   assert.deepEqual(mutations.map(({ entity, operation }) => ({ entity, operation })), [
-    { entity: 'scorebook', operation: 'upsert' },
     { entity: 'game_players', operation: 'softDelete' },
+    { entity: 'scorebook', operation: 'upsert' },
   ])
-  assert.deepEqual(mutations[1].entityId, { gameId: 'g_mutations', personId: 'p_two' })
-  assert.deepEqual(mutations[1].payload, {
+  assert.deepEqual(mutations[0].entityId, { gameId: 'g_mutations', personId: 'p_two' })
+  assert.deepEqual(mutations[0].payload, {
     gameId: 'g_mutations',
     personId: 'p_two',
     seatOrder: 1,
     nameSnapshot: 'Two',
   })
-  const cachedAfterDelete = enqueueMutation(loadSyncStore(), mutations[1]).cache
+  const cachedAfterDelete = enqueueMutation(loadSyncStore(), mutations[0]).cache
   assert.deepEqual(toRemoteRows(cachedAfterDelete).gamePlayers.find((player) => player.person_id === 'p_two'), {
     game_id: 'g_mutations',
     person_id: 'p_two',
     seat_order: 1,
     name_snapshot: 'Two',
-    updated_at: new Date(mutations[1].updatedAt).toISOString(),
-    deleted_at: new Date(mutations[1].updatedAt).toISOString(),
+    updated_at: new Date(mutations[0].updatedAt).toISOString(),
+    deleted_at: new Date(mutations[0].updatedAt).toISOString(),
   })
+})
+
+test('player Undo restores the membership snapshot, scores, and shifted seats', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.roster = [...state.roster, { id: 'p_three', name: 'Three' }]
+  state.games[0].players = [
+    state.games[0].players[0],
+    state.games[0].players[1],
+    { id: 'p_three', name: 'Three' },
+  ]
+  state.games[0].rounds = [{
+    id: 'r_players',
+    entries: {
+      p_one: { score: 500 },
+      p_two: { score: 700 },
+      p_three: { score: 300 },
+    },
+  }]
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({
+    ...game,
+    players: game.players.filter((player) => player.id !== 'p_two'),
+    rounds: game.rounds.map((round) => {
+      const entries = { ...round.entries }
+      delete entries.p_two
+      return { ...round, entries }
+    }),
+  })
+
+  assert.deepEqual(globalThis.__scorebookTestSync.mutations.map(({ entity, operation }) => ({ entity, operation })), [
+    { entity: 'game_players', operation: 'softDelete' },
+    { entity: 'scorebook', operation: 'upsert' },
+  ])
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  assert.match(textOf(toast), /Player removed.*Undo is available for 10 seconds/i)
+  const undoButton = findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo')
+  undoButton.props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterUndo = App()
+  const restoredGame = appContent(afterUndo).props.game
+  assert.deepEqual(restoredGame.players.map((player) => player.id), ['p_one', 'p_two', 'p_three'])
+  assert.deepEqual(restoredGame.rounds[0].entries, {
+    p_one: { score: 500 },
+    p_two: { score: 700 },
+    p_three: { score: 300 },
+  })
+
+  assert.deepEqual(globalThis.__scorebookTestSync.mutations.map(({ entity, operation }) => ({ entity, operation })), [
+    { entity: 'scorebook', operation: 'restore' },
+  ])
+  const restoreMutation = globalThis.__scorebookTestSync.mutations.find((mutation) => mutation.operation === 'restore')
+  assert.ok(restoreMutation)
+  assert.deepEqual(restoreMutation.payload.rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [
+    ['p_two', 1], ['p_three', 2],
+  ])
+  assert.deepEqual(restoreMutation.restore.gamePlayers, [{
+    game_id: 'g_mutations',
+    person_id: 'p_two',
+    updated_at: restoreMutation.restore.gamePlayers[0].deleted_at,
+    deleted_at: restoreMutation.restore.gamePlayers[0].deleted_at,
+  }])
+})
+
+test('player Undo expiry leaves the membership deleted', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({
+    ...game,
+    players: game.players.filter((player) => player.id !== 'p_two'),
+    rounds: game.rounds.map((round) => {
+      const entries = { ...round.entries }
+      delete entries.p_two
+      return { ...round, entries }
+    }),
+  })
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  afterDelete.props.undoToast.props.onExpire()
+  globalThis.__scorebookTestReact.begin()
+  const afterExpiry = App()
+  assert.equal(afterExpiry.props.undoToast, null)
+  assert.deepEqual(appContent(afterExpiry).props.game.players.map((player) => player.id), ['p_one'])
+  assert.equal(globalThis.__scorebookTestSync.mutations.some((mutation) => mutation.operation === 'restore'), false)
 })
 
 test('middle player removal queues later players with shifted seat order', async () => {
@@ -671,11 +773,12 @@ test('middle player removal queues later players with shifted seat order', async
   findElement(gameTree, (element) => element.props?.['aria-label'] === 'Remove Two').props.onClick()
 
   const mutations = globalThis.__scorebookTestSync.mutations
+  const scorebookMutation = mutations.find((mutation) => mutation.entity === 'scorebook')
   assert.deepEqual(
-    mutations[0].payload.rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]),
+    scorebookMutation.payload.rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]),
     [['p_three', 1]],
   )
-  assert.deepEqual(mutations[1].payload, {
+  assert.deepEqual(mutations.find((mutation) => mutation.entity === 'game_players').payload, {
     gameId: 'g_mutations',
     personId: 'p_two',
     seatOrder: 1,
@@ -779,7 +882,8 @@ test('synced earlier player removal sends shifted seats with new versions', asyn
   const game = initial.props.content.props.game
   initial.props.content.props.onUpdate({ ...game, players: game.players.slice(1) })
 
-  const rows = globalThis.__scorebookTestSync.mutations[0].payload.rows
+  const scorebookMutation = globalThis.__scorebookTestSync.mutations.find((mutation) => mutation.entity === 'scorebook')
+  const rows = scorebookMutation.payload.rows
   assert.deepEqual(rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [['p_two', 0], ['p_three', 1]])
   assert.ok(Date.parse(rows.gamePlayers.find((player) => player.person_id === 'p_two').updated_at) > 1200)
   assert.ok(Date.parse(rows.gamePlayers.find((player) => player.person_id === 'p_three').updated_at) > 1300)
