@@ -1,4 +1,5 @@
 const KEY = 'gamescorer.cloud.v1'
+const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
 
 const EMPTY_CACHE = { games: [], roster: [], activeGameId: null }
 const EMPTY_STORE = {
@@ -10,25 +11,34 @@ const EMPTY_STORE = {
 }
 
 function storageOrDefault(storage) {
-  if (storage) return storage
-  return globalThis?.localStorage ?? globalThis?.window?.localStorage ?? null
+  if (storage !== undefined) return storage
+  try {
+    return globalThis?.localStorage ?? globalThis?.window?.localStorage ?? null
+  } catch {
+    return null
+  }
 }
 
 function clone(value) {
-  if (Array.isArray(value)) return value.map(clone)
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, clone(entry)]))
+    const copy = Array.isArray(value) ? [] : {}
+    for (const key of Reflect.ownKeys(value)) {
+      if (Array.isArray(value) && key === 'length') continue
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if ('value' in descriptor) descriptor.value = clone(descriptor.value)
+      Object.defineProperty(copy, key, descriptor)
+    }
+    return copy
   }
   return value
 }
 
 function normalizeCache(cache) {
-  return {
-    ...(cache && typeof cache === 'object' ? clone(cache) : {}),
-    games: Array.isArray(cache?.games) ? clone(cache.games) : [],
-    roster: Array.isArray(cache?.roster) ? clone(cache.roster) : [],
-    activeGameId: cache?.activeGameId ?? null,
-  }
+  const normalized = cache && typeof cache === 'object' ? clone(cache) : {}
+  normalized.games = Array.isArray(cache?.games) ? clone(cache.games) : []
+  normalized.roster = Array.isArray(cache?.roster) ? clone(cache.roster) : []
+  normalized.activeGameId = cache?.activeGameId ?? null
+  return normalized
 }
 
 function normalizeStore(store) {
@@ -47,16 +57,22 @@ function emptyStore() {
 
 function timestamp(value) {
   if (value === null || value === undefined || value === '') return null
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'number') return validMilliseconds(value)
   if (typeof value !== 'string') return null
   const text = value.trim()
   if (!text) return null
   if (/^[+-]?\d+(?:\.\d+)?$/.test(text)) {
     const milliseconds = Number(text)
-    return Number.isFinite(milliseconds) ? milliseconds : null
+    return validMilliseconds(milliseconds)
   }
   const milliseconds = Date.parse(text)
-  return Number.isFinite(milliseconds) ? milliseconds : null
+  return validMilliseconds(milliseconds)
+}
+
+function validMilliseconds(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return null
+  const date = new Date(milliseconds)
+  return Number.isFinite(date.getTime()) ? milliseconds : null
 }
 
 function recordField(record, camelName, snakeName) {
@@ -81,11 +97,21 @@ function withoutTombstone(record) {
   return next
 }
 
-function mergeRecords(localRecords, remoteRecords, remoteFallback = 0) {
+function indexRecords(records, fallback) {
+  const indexed = new Map()
+  for (const record of records) {
+    if (record?.id == null) continue
+    const previous = indexed.get(record.id)
+    if (!previous || version(record, fallback) >= version(previous, fallback)) indexed.set(record.id, record)
+  }
+  return indexed
+}
+
+function mergeRecords(localRecords, remoteRecords, remoteFallback = 0, localFallback = 0) {
   const local = Array.isArray(localRecords) ? localRecords : []
   const remote = Array.isArray(remoteRecords) ? remoteRecords : []
-  const localById = new Map(local.filter((record) => record?.id != null).map((record) => [record.id, record]))
-  const remoteById = new Map(remote.filter((record) => record?.id != null).map((record) => [record.id, record]))
+  const localById = indexRecords(local, localFallback)
+  const remoteById = indexRecords(remote, remoteFallback)
   const ids = [...localById.keys(), ...remoteById.keys().filter((id) => !localById.has(id))]
   const merged = []
 
@@ -101,7 +127,7 @@ function mergeRecords(localRecords, remoteRecords, remoteFallback = 0) {
       if (isTombstone(localRecord)) continue
       chosen = localRecord
     } else {
-      chosen = version(remoteRecord, remoteFallback) >= version(localRecord) ? remoteRecord : localRecord
+      chosen = version(remoteRecord, remoteFallback) >= version(localRecord, localFallback) ? remoteRecord : localRecord
       if (isTombstone(chosen)) continue
     }
 
@@ -111,24 +137,47 @@ function mergeRecords(localRecords, remoteRecords, remoteFallback = 0) {
   return merged
 }
 
-function mergeGame(localGame, remoteGame, lastSyncAt) {
+function metadataFor(state) {
+  return state?.[CLOUD_METADATA] ?? {}
+}
+
+function metadataRecords(metadata, key) {
+  return Array.isArray(metadata?.[key]) ? metadata[key] : []
+}
+
+function childMetadata(metadata, key, gameId) {
+  return metadataRecords(metadata, key).filter((record) => record.gameId === gameId)
+}
+
+function mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetadata) {
   const remoteFallback = timestamp(recordField(remoteGame, 'updatedAt', 'updated_at')) ?? lastSyncAt ?? 0
+  const localFallback = timestamp(recordField(localGame, 'updatedAt', 'updated_at')) ?? 0
   const game = version(remoteGame, remoteFallback) >= version(localGame)
     ? remoteGame
     : localGame
   if (isTombstone(game)) return null
 
   const merged = withoutTombstone(game)
-  merged.players = mergeRecords(localGame?.players, remoteGame?.players, remoteFallback)
-  merged.rounds = mergeRecords(localGame?.rounds, remoteGame?.rounds, remoteFallback)
+  merged.players = mergeRecords(
+    [...(localGame?.players ?? []), ...childMetadata(localMetadata, 'gamePlayers', localGame?.id)],
+    [...(remoteGame?.players ?? []), ...childMetadata(remoteMetadata, 'gamePlayers', remoteGame?.id)],
+    remoteFallback,
+    localFallback,
+  )
+  merged.rounds = mergeRecords(
+    [...(localGame?.rounds ?? []), ...childMetadata(localMetadata, 'rounds', localGame?.id)],
+    [...(remoteGame?.rounds ?? []), ...childMetadata(remoteMetadata, 'rounds', remoteGame?.id)],
+    remoteFallback,
+    localFallback,
+  )
   return merged
 }
 
-function mergeGames(localGames, remoteGames, lastSyncAt) {
+function mergeGames(localGames, remoteGames, lastSyncAt, localMetadata, remoteMetadata) {
   const local = Array.isArray(localGames) ? localGames : []
   const remote = Array.isArray(remoteGames) ? remoteGames : []
-  const localById = new Map(local.filter((game) => game?.id != null).map((game) => [game.id, game]))
-  const remoteById = new Map(remote.filter((game) => game?.id != null).map((game) => [game.id, game]))
+  const localById = indexRecords(local, 0)
+  const remoteById = indexRecords(remote, lastSyncAt)
   const ids = [...localById.keys(), ...remoteById.keys().filter((id) => !localById.has(id))]
   const merged = []
 
@@ -144,14 +193,14 @@ function mergeGames(localGames, remoteGames, lastSyncAt) {
       continue
     }
 
-    const game = mergeGame(localGame, remoteGame, lastSyncAt)
+    const game = mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetadata)
     if (game) merged.push(game)
   }
 
   return merged
 }
 
-export function loadSyncStore(storage = storageOrDefault()) {
+export function loadSyncStore(storage) {
   try {
     const raw = storageOrDefault(storage)?.getItem(KEY)
     if (!raw) return emptyStore()
@@ -161,7 +210,7 @@ export function loadSyncStore(storage = storageOrDefault()) {
   }
 }
 
-export function saveSyncStore(store, storage = storageOrDefault()) {
+export function saveSyncStore(store, storage) {
   const normalized = normalizeStore(store)
   try {
     storageOrDefault(storage)?.setItem(KEY, JSON.stringify(normalized))
@@ -192,11 +241,27 @@ export function mergeRemoteState(localState, remoteState, lastSyncAt = null) {
   const local = normalizeCache(localState)
   const remote = remoteState && typeof remoteState === 'object' ? remoteState : {}
   const syncFallback = timestamp(lastSyncAt) ?? 0
-
-  return {
+  const localMetadata = metadataFor(local)
+  const remoteMetadata = metadataFor(remote)
+  const localRoster = [...local.roster, ...metadataRecords(localMetadata, 'roster')]
+  const remoteRoster = [...(Array.isArray(remote.roster) ? remote.roster : []), ...metadataRecords(remoteMetadata, 'roster')]
+  const localGames = [...local.games, ...metadataRecords(localMetadata, 'games')]
+  const remoteGames = [...(Array.isArray(remote.games) ? remote.games : []), ...metadataRecords(remoteMetadata, 'games')]
+  const merged = {
     ...local,
-    roster: mergeRecords(local.roster, remote.roster, syncFallback),
-    games: mergeGames(local.games, remote.games, syncFallback),
+    roster: mergeRecords(localRoster, remoteRoster, syncFallback),
+    games: mergeGames(localGames, remoteGames, syncFallback, localMetadata, remoteMetadata),
     activeGameId: local.activeGameId,
   }
+
+  Object.defineProperty(merged, CLOUD_METADATA, {
+    value: {
+      roster: [...metadataRecords(localMetadata, 'roster'), ...metadataRecords(remoteMetadata, 'roster')],
+      games: [...metadataRecords(localMetadata, 'games'), ...metadataRecords(remoteMetadata, 'games')],
+      gamePlayers: [...metadataRecords(localMetadata, 'gamePlayers'), ...metadataRecords(remoteMetadata, 'gamePlayers')],
+      rounds: [...metadataRecords(localMetadata, 'rounds'), ...metadataRecords(remoteMetadata, 'rounds')],
+    },
+    configurable: true,
+  })
+  return merged
 }

@@ -3,10 +3,15 @@ const KEY = 'gamescorer.v1'
 const EMPTY = { games: [], roster: [], activeGameId: null }
 
 function getStorage(storage) {
-  return storage ?? globalThis?.localStorage ?? globalThis?.window?.localStorage
+  if (storage !== undefined) return storage
+  try {
+    return globalThis?.localStorage ?? globalThis?.window?.localStorage
+  } catch {
+    return null
+  }
 }
 
-export function loadState(storage = getStorage()) {
+export function loadState(storage) {
   try {
     const raw = getStorage(storage)?.getItem(KEY)
     if (!raw) return { ...EMPTY }
@@ -22,7 +27,7 @@ export function loadState(storage = getStorage()) {
   }
 }
 
-export function saveState(state, storage = getStorage()) {
+export function saveState(state, storage) {
   try {
     getStorage(storage)?.setItem(KEY, JSON.stringify(state))
   } catch (err) {

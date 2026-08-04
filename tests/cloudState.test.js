@@ -120,3 +120,38 @@ test('uses null for missing optional remote timestamps', () => {
 
   assert.equal(state.games[0].finishedAt, null)
 })
+
+test('handles malformed and out-of-range timestamps without throwing', () => {
+  assert.doesNotThrow(() => {
+    const rows = toRemoteRows({
+      roster: [],
+      games: [{
+        id: 'g_invalid',
+        gameId: 'farkle',
+        createdAt: Number.MAX_VALUE,
+        updatedAt: Number.MAX_VALUE,
+        finishedAt: Number.MAX_VALUE,
+        players: [],
+        settings: {},
+        rounds: [],
+      }],
+    })
+
+    assert.equal(rows.games[0].created_at, '1970-01-01T00:00:00.000Z')
+    assert.equal(rows.games[0].updated_at, '1970-01-01T00:00:00.000Z')
+    assert.equal(rows.games[0].finished_at, null)
+  })
+
+  const state = fromRemoteRows({
+    people: [],
+    games: [{
+      id: 'g_invalid', game_id: 'farkle', created_at: 'not-a-timestamp',
+      updated_at: Number.MAX_VALUE, finished_at: 'also-invalid', settings: {},
+    }],
+    gamePlayers: [],
+    rounds: [],
+  })
+  assert.equal(state.games[0].createdAt, null)
+  assert.equal(state.games[0].updatedAt, null)
+  assert.equal(state.games[0].finishedAt, null)
+})

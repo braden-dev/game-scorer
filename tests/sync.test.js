@@ -1,5 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { fromRemoteRows } from '../src/lib/cloudState.js'
+import { loadState, saveState } from '../src/lib/storage.js'
 import {
   enqueueMutation,
   loadSyncStore,
@@ -147,4 +149,103 @@ test('saveSyncStore writes the cloud key without affecting the legacy key', () =
 
   assert.match(storage.getItem('gamescorer.cloud.v1'), /initialMigrationCompleted/)
   assert.deepEqual(JSON.parse(storage.getItem('gamescorer.v1')), { games: [{ id: 'legacy' }], roster: [] })
+})
+
+test('tolerates a throwing default storage getter for legacy and cloud storage', () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  assert.equal(descriptor?.configurable ?? true, true)
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new Error('storage unavailable')
+    },
+  })
+
+  try {
+    assert.doesNotThrow(() => loadState())
+    assert.doesNotThrow(() => saveState({ games: [], roster: [], activeGameId: null }))
+    assert.doesNotThrow(() => loadSyncStore())
+    assert.doesNotThrow(() => saveSyncStore(loadSyncStore()))
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else delete globalThis.localStorage
+  }
+})
+
+test('honors remote tombstones through the row adapter and state merge', () => {
+  const local = {
+    activeGameId: 'g_deleted',
+    roster: [
+      { id: 'p_deleted', name: 'Deleted Person', updatedAt: 100 },
+      { id: 'p_live', name: 'Live Person', updatedAt: 100 },
+    ],
+    games: [
+      {
+        id: 'g_deleted', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+        players: [{ id: 'p_deleted', name: 'Deleted Person' }], settings: {},
+        rounds: [{ id: 'r_deleted', entries: { p_deleted: { score: 1 } } }], finishedAt: null,
+      },
+      {
+        id: 'g_live', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+        players: [{ id: 'p_live', name: 'Live Person' }], settings: {},
+        rounds: [{ id: 'r_live', entries: { p_live: { score: 1 } } }], finishedAt: null,
+      },
+    ],
+  }
+  const remote = fromRemoteRows({
+    people: [
+      { id: 'p_deleted', name: 'Deleted Person', updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'p_live', name: 'Live Person', updated_at: '1970-01-01T00:00:00.200Z' },
+    ],
+    games: [
+      { id: 'g_deleted', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.200Z', settings: {} },
+      { id: 'g_live', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.200Z', settings: {} },
+    ],
+    gamePlayers: [
+      { game_id: 'g_deleted', person_id: 'p_deleted', seat_order: 0, name_snapshot: 'Deleted Person', updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.200Z' },
+      { game_id: 'g_live', person_id: 'p_live', seat_order: 0, name_snapshot: 'Live Person', updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.200Z' },
+    ],
+    rounds: [
+      { id: 'r_deleted', game_id: 'g_deleted', round_index: 0, entries: {}, updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'r_live', game_id: 'g_live', round_index: 0, entries: {}, updated_at: '1970-01-01T00:00:00.200Z', deleted_at: '1970-01-01T00:00:00.200Z' },
+    ],
+  })
+
+  const merged = mergeRemoteState(local, remote, 200)
+  assert.deepEqual(merged.roster, [{ id: 'p_live', name: 'Live Person' }])
+  assert.deepEqual(merged.games.map((game) => game.id), ['g_live'])
+  assert.deepEqual(merged.games[0].players, [])
+  assert.deepEqual(merged.games[0].rounds, [])
+  assert.equal(merged.activeGameId, 'g_deleted')
+})
+
+test('uses parent versions for missing local child timestamps and preserves newer local children', () => {
+  const local = {
+    activeGameId: 'g_one',
+    roster: [],
+    games: [{
+      id: 'g_one', gameId: 'farkle', createdAt: 100, updatedAt: 500,
+      players: [{ id: 'p_one', name: 'Local Player' }], settings: { target: 100 },
+      rounds: [
+        { id: 'r_missing', entries: { p_one: { score: 10 } } },
+        { id: 'r_newer', updatedAt: 700, entries: { p_one: { score: 70 } } },
+      ], finishedAt: null,
+    }],
+  }
+  const remote = fromRemoteRows({
+    people: [{ id: 'p_one', name: 'Remote Player', updated_at: '1970-01-01T00:00:00.200Z' }],
+    games: [{ id: 'g_one', game_id: 'farkle', created_at: '1970-01-01T00:00:00.100Z', updated_at: '1970-01-01T00:00:00.800Z', settings: { target: 200 } }],
+    gamePlayers: [{ game_id: 'g_one', person_id: 'p_one', seat_order: 0, name_snapshot: 'Remote Player', updated_at: '1970-01-01T00:00:00.200Z' }],
+    rounds: [
+      { id: 'r_missing', game_id: 'g_one', round_index: 0, entries: { p_one: { score: 20 } }, updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'r_newer', game_id: 'g_one', round_index: 1, entries: { p_one: { score: 80 } }, updated_at: '1970-01-01T00:00:00.600Z' },
+    ],
+  })
+
+  const merged = mergeRemoteState(local, remote, 800)
+  assert.deepEqual(merged.games[0].players[0], { id: 'p_one', name: 'Local Player' })
+  assert.deepEqual(merged.games[0].rounds, [
+    { id: 'r_missing', entries: { p_one: { score: 10 } } },
+    { id: 'r_newer', updatedAt: 700, entries: { p_one: { score: 70 } } },
+  ])
 })
