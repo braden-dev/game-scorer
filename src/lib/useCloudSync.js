@@ -313,11 +313,11 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   const runSync = useCallback(async ({ initial = false } = {}) => {
     if (!configured || !apiRef.current) {
       if (mountedRef.current) setStatus('local')
-      return
+      return { ok: false, reason: 'error' }
     }
     if (!online()) {
       if (mountedRef.current) setStatus('offline')
-      return
+      return { ok: false, reason: 'offline' }
     }
 
     let store = storeRef.current ?? loadSyncStore()
@@ -480,11 +480,15 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           ? 'conflict'
           : finalConflictMessage ? 'error' : pendingAfterReplay ? 'pending' : 'synced')
       }
+      const result = finalConflictMessage || pendingAfterReplay
+        ? { ok: false, reason: 'error' }
+        : { ok: true }
       if (pendingAfterReplay) {
         setTimeout(() => {
           if (mountedRef.current && storeRef.current?.outbox.some(isReplayableMutation)) void syncNow()
         }, 0)
       }
+      return result
     } catch (syncError) {
       const errorMessage = messageFor(syncError)
       store = commitStore({ ...(storeRef.current ?? store), lastError: errorMessage })
@@ -504,6 +508,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           if (mountedRef.current) void syncNowRef.current?.()
         }, delay)
       }
+      return { ok: false, reason: 'error' }
     }
   }, [configured, publishStore, replayMutation, setState])
 

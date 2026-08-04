@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as esbuild from 'esbuild'
 import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
-import { loadSyncStore } from '../src/lib/sync.js'
+import { loadSyncStore, saveSyncStore } from '../src/lib/sync.js'
 import { loadReconciledState, saveState, saveStateToCloudCache, shouldOfferInitialMigration } from '../src/lib/storage.js'
 
 class MemoryStorage {
@@ -63,6 +63,7 @@ export function cloudConfigured() { return true }
 `
 
 const fakeSync = `
+import { useEffect } from 'react'
 const STORE_KEY = 'gamescorer.cloud.v1'
 const state = globalThis.__scorebookIntegrationSync ??= { outbox: [], status: 'synced', lastError: null }
 function readStore() {
@@ -93,6 +94,12 @@ const api = globalThis.__scorebookIntegrationCloudApi ??= {
 export const CONFLICT_MESSAGE = 'This was changed on another device. The shared version is now shown.'
 export function useCloudSync() {
   const syncNow = async (options = {}) => {
+    if (globalThis.navigator?.onLine === false) {
+      state.status = 'offline'
+      state.lastError = null
+      persistStore()
+      return { ok: false, reason: 'offline' }
+    }
     if (options.initial) {
       try {
         await api.fetchSnapshot()
@@ -100,7 +107,7 @@ export function useCloudSync() {
         state.status = 'error'
         state.lastError = error.message
         persistStore()
-        return
+        return { ok: false, reason: 'error' }
       }
       state.status = 'synced'
       state.lastError = null
@@ -115,7 +122,7 @@ export function useCloudSync() {
       state.status = 'synced'
       state.lastError = null
       persistStore()
-      return
+      return { ok: true }
     }
     try {
       await api.upsertRows(mutation.payload.rows, mutation)
@@ -125,10 +132,18 @@ export function useCloudSync() {
     } catch (error) {
       state.status = 'error'
       state.lastError = error.message
+      persistStore()
+      return { ok: false, reason: 'error' }
     }
     persistStore()
+    return { ok: true }
   }
   state.syncNow = syncNow
+  useEffect(() => {
+    const retry = () => { void syncNow({ initial: true }) }
+    window.addEventListener('online', retry)
+    return () => window.removeEventListener('online', retry)
+  }, [])
   return {
     status: state.status,
     pendingCount: state.outbox.length,
@@ -265,15 +280,25 @@ test('aborts initial migration when the cloud snapshot fails, then retries witho
       finishedAt: null,
     }],
   }, storage)
-  storage.setItem('gamescorer.cloud.v1', JSON.stringify({ initialMigrationCompleted: false, outbox: [] }))
+  storage.setItem('gamescorer.cloud.v1', JSON.stringify({
+    initialMigrationCompleted: false,
+    outbox: [],
+    cache: { games: [], roster: [], activeGameId: null },
+    reconciledCache: { games: [], roster: [], activeGameId: null },
+    lastSyncAt: '2026-01-01T00:00:00.000Z',
+  }))
   globalThis.localStorage = storage
+  const listeners = new Map()
   globalThis.window = {
     location: { pathname: '/' },
     matchMedia: () => ({ matches: false }),
-    navigator: { standalone: false, userAgent: 'test', maxTouchPoints: 0 },
-    addEventListener() {},
-    removeEventListener() {},
+    navigator: { onLine: true, standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+    addEventListener(name, listener) { listeners.set(name, listener) },
+    removeEventListener(name) { listeners.delete(name) },
+    dispatchEvent(event) { listeners.get(event.type)?.(event) },
   }
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: globalThis.window.navigator })
+  globalThis.navigator.onLine = false
   globalThis.__scorebookIntegrationReactControl.reset()
   globalThis.__scorebookIntegrationSync.outbox = []
   globalThis.__scorebookIntegrationSync.status = 'synced'
@@ -289,14 +314,16 @@ test('aborts initial migration when the cloud snapshot fails, then retries witho
 
   let store = loadSyncStore()
   assert.equal(store.initialMigrationCompleted, false)
-  assert.equal(store.lastError, 'snapshot unavailable')
+  assert.equal(store.lastError, null)
   assert.deepEqual(store.outbox, [])
   assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
   assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   globalThis.__scorebookIntegrationCloudApi.failFetch = false
   globalThis.__scorebookIntegrationCloudApi.failUpsert = false
-  await globalThis.__scorebookIntegrationSync.syncNow({ initial: true })
+  globalThis.navigator.onLine = true
+  globalThis.window.dispatchEvent({ type: 'online' })
+  await new Promise((resolve) => setImmediate(resolve))
   globalThis.__scorebookIntegrationReactControl.begin()
   App()
   await globalThis.__scorebookIntegrationReactControl.flushEffects()
@@ -327,13 +354,16 @@ test('persists a failed migration for retry and completes only after replay remo
   }, storage)
   storage.setItem('gamescorer.cloud.v1', JSON.stringify({ initialMigrationCompleted: false, outbox: [] }))
   globalThis.localStorage = storage
+  const listeners = new Map()
   globalThis.window = {
     location: { pathname: '/' },
     matchMedia: () => ({ matches: false }),
-    navigator: { standalone: false, userAgent: 'test', maxTouchPoints: 0 },
-    addEventListener() {},
-    removeEventListener() {},
+    navigator: { onLine: true, standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+    addEventListener(name, listener) { listeners.set(name, listener) },
+    removeEventListener(name) { listeners.delete(name) },
+    dispatchEvent(event) { listeners.get(event.type)?.(event) },
   }
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: globalThis.window.navigator })
   globalThis.__scorebookIntegrationReactControl.reset()
   globalThis.__scorebookIntegrationSync.outbox = []
   globalThis.__scorebookIntegrationSync.status = 'synced'
@@ -369,6 +399,83 @@ test('persists a failed migration for retry and completes only after replay remo
 
   store = loadSyncStore()
   assert.equal(store.initialMigrationCompleted, true)
+  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations.map(({ initialMigration }) => initialMigration), [true])
+})
+
+test('preserves a persisted migration when the snapshot fails and recognizes its replay without duplicating it', async () => {
+  const App = await loadAppForIntegrationTest()
+  const storage = new MemoryStorage()
+  saveState({
+    activeGameId: null,
+    roster: [{ id: 'p_local', name: 'Local Player' }],
+    games: [{
+      id: 'g_local',
+      gameId: 'farkle',
+      createdAt: 1,
+      updatedAt: 2,
+      players: [{ id: 'p_local', name: 'Local Player' }],
+      settings: {},
+      rounds: [],
+      finishedAt: null,
+    }],
+  }, storage)
+  const existingMigration = {
+    id: 'migration_existing',
+    entity: 'scorebook',
+    operation: 'upsert',
+    initialMigration: true,
+    payload: { rows: { people: [], games: [], gamePlayers: [], rounds: [] } },
+  }
+  saveSyncStore({
+    cache: { games: [], roster: [], activeGameId: null },
+    reconciledCache: { games: [], roster: [], activeGameId: null },
+    lastSyncAt: '2026-01-01T00:00:00.000Z',
+    outbox: [existingMigration],
+    initialMigrationCompleted: false,
+  }, storage)
+  globalThis.localStorage = storage
+  const listeners = new Map()
+  globalThis.window = {
+    location: { pathname: '/' },
+    matchMedia: () => ({ matches: false }),
+    navigator: { onLine: true, standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+    addEventListener(name, listener) { listeners.set(name, listener) },
+    removeEventListener(name) { listeners.delete(name) },
+    dispatchEvent(event) { listeners.get(event.type)?.(event) },
+  }
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: globalThis.window.navigator })
+  globalThis.__scorebookIntegrationReactControl.reset()
+  globalThis.__scorebookIntegrationSync.outbox = [existingMigration]
+  globalThis.__scorebookIntegrationSync.status = 'synced'
+  globalThis.__scorebookIntegrationSync.lastError = null
+  globalThis.__scorebookIntegrationCloudApi.mutations = []
+  globalThis.__scorebookIntegrationCloudApi.failFetch = true
+  globalThis.__scorebookIntegrationCloudApi.failUpsert = false
+
+  globalThis.__scorebookIntegrationReactControl.begin()
+  const appTree = App()
+  await globalThis.__scorebookIntegrationReactControl.flushEffects()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  let store = loadSyncStore()
+  assert.equal(store.initialMigrationCompleted, false)
+  assert.deepEqual(store.outbox.map(({ id }) => id), ['migration_existing'])
+  assert.equal(store.lastError, 'snapshot unavailable')
+  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
+  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
+
+  globalThis.__scorebookIntegrationCloudApi.failFetch = false
+  globalThis.navigator.onLine = true
+  globalThis.window.dispatchEvent({ type: 'online' })
+  await new Promise((resolve) => setImmediate(resolve))
+  globalThis.__scorebookIntegrationReactControl.begin()
+  App()
+  await globalThis.__scorebookIntegrationReactControl.flushEffects()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  store = loadSyncStore()
+  assert.equal(store.initialMigrationCompleted, true)
+  assert.equal(store.outbox.length, 0)
   assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations.map(({ initialMigration }) => initialMigration), [true])
 })
 

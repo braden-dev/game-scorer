@@ -255,6 +255,48 @@ test('mounts the real hook, follows navigation during deferred sync, deduplicate
   }
 })
 
+test('returns explicit outcomes for successful, offline, and failed initial syncs', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  let failSnapshot = false
+  const api = {
+    fetchSnapshot: async () => {
+      if (failSnapshot) throw new Error('snapshot unavailable')
+      return { people: [], games: [], gamePlayers: [], rounds: [] }
+    },
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    let result
+    await act(async () => { result = await observed.hook.syncNow({ initial: true }) })
+    assert.deepEqual(result, { ok: true })
+
+    globalThis.navigator.onLine = false
+    await act(async () => { result = await observed.hook.syncNow({ initial: true }) })
+    assert.deepEqual(result, { ok: false, reason: 'offline' })
+
+    globalThis.navigator.onLine = true
+    failSnapshot = true
+    await act(async () => { result = await observed.hook.syncNow({ initial: true }) })
+    assert.deepEqual(result, { ok: false, reason: 'error' })
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('preserves existing tombstone metadata through an incremental sync merge', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

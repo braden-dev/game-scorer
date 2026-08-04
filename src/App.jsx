@@ -120,7 +120,7 @@ export default function App() {
   )
   const stateRef = useRef(state)
   const migrationStartedRef = useRef(false)
-  const migrationEnqueuedRef = useRef(false)
+  const migrationEnqueuedRef = useRef(loadSyncStore().outbox.some((mutation) => mutation.initialMigration))
   const migrationRetryBlockedRef = useRef(null)
   const undoRef = useRef(null)
   const [undoAction, setUndoAction] = useState(null)
@@ -539,22 +539,22 @@ export default function App() {
   const publishMigration = async () => {
     const migrationStore = loadSyncStore()
     const existingMigration = migrationStore.outbox.find((mutation) => mutation.initialMigration)
-    const migrationId = existingMigration?.id ?? uid('migration')
-    if (existingMigration) sync.cancelSyncMutations?.((mutation) => mutation.id === migrationId)
 
     // A first publish reads the complete cloud snapshot first. This keeps the
     // migration additive and prevents local history from competing with rows
     // that were already seeded by another device.
-    let initialSyncError = null
+    let initialSyncResult
     try {
-      await sync.syncNow({ initial: true })
+      initialSyncResult = await sync.syncNow({ initial: true })
     } catch (error) {
-      initialSyncError = error
+      initialSyncResult = { ok: false, reason: 'error', error }
     }
     const reconciledStore = loadSyncStore()
-    if (initialSyncError || reconciledStore.lastError || !hasCompleteReconciledCloudSnapshot(reconciledStore)) {
+    if (initialSyncResult?.ok !== true) {
       migrationStartedRef.current = false
-      migrationRetryBlockedRef.current = reconciledStore.lastError || 'missing-reconciled-cloud-snapshot'
+      migrationRetryBlockedRef.current = initialSyncResult?.reason === 'offline'
+        ? 'offline'
+        : reconciledStore.lastError || initialSyncResult?.reason || 'error'
       return
     }
     const cloudState = loadReconciledState()
@@ -563,6 +563,14 @@ export default function App() {
       migrationRetryBlockedRef.current = 'missing-reconciled-cloud-snapshot'
       return
     }
+    const pendingMigration = reconciledStore.outbox.find((mutation) => mutation.initialMigration)
+    if (existingMigration && !pendingMigration) {
+      sync.updateSyncStore({ initialMigrationCompleted: true })
+      setInitialMigrationCompleted(true)
+      return
+    }
+    const migrationId = pendingMigration?.id ?? existingMigration?.id ?? uid('migration')
+    if (pendingMigration) sync.cancelSyncMutations?.((mutation) => mutation.initialMigration)
     const reconciledState = mergeMigrationState(stateRef.current, cloudState)
     stateRef.current = reconciledState
     setState(reconciledState)
@@ -597,22 +605,27 @@ export default function App() {
   }
 
   useEffect(() => {
-    const store = loadSyncStore()
-    if (!configured || !hadLocalDataAtStartup || store.initialMigrationCompleted || migrationStartedRef.current) return
-    const retryBlock = migrationRetryBlockedRef.current
-    if (retryBlock && retryBlock === (store.lastError || (!hasCompleteReconciledCloudSnapshot(store) ? 'missing-reconciled-cloud-snapshot' : null))) return
-    migrationRetryBlockedRef.current = null
-    migrationStartedRef.current = true
-    void publishMigration().catch(() => {})
-  }, [configured, hadLocalDataAtStartup, sync.status, publishMigration])
-
-  useEffect(() => {
     if (!migrationEnqueuedRef.current || initialMigrationCompleted) return
     const store = loadSyncStore()
     if (store.outbox.some((mutation) => mutation.initialMigration)) return
     sync.updateSyncStore({ initialMigrationCompleted: true })
     setInitialMigrationCompleted(true)
   }, [initialMigrationCompleted, sync.pendingCount, sync.updateSyncStore])
+
+  useEffect(() => {
+    const store = loadSyncStore()
+    if (!configured || !hadLocalDataAtStartup || store.initialMigrationCompleted || migrationStartedRef.current) return
+    const retryBlock = migrationRetryBlockedRef.current
+    const retryState = sync.status === 'offline'
+      ? 'offline'
+      : sync.status === 'error'
+        ? store.lastError || 'error'
+        : store.lastError || (!hasCompleteReconciledCloudSnapshot(store) ? 'missing-reconciled-cloud-snapshot' : null)
+    if (retryBlock && retryBlock === retryState) return
+    migrationRetryBlockedRef.current = null
+    migrationStartedRef.current = true
+    void publishMigration().catch(() => {})
+  }, [configured, hadLocalDataAtStartup, sync.status, publishMigration])
 
   const getReconciledCloudState = () => loadReconciledState()
 

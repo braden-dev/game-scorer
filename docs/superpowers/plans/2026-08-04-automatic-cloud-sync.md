@@ -111,9 +111,11 @@ git commit -m "fix: preserve local state after sync conflicts"
 
 **Files:**
 - Modify: `src/App.jsx:99-117, 522-576, 580-675`
+- Modify: `src/lib/useCloudSync.js:313-513`
 - Modify: `src/components/DataPanel.jsx:7-16, 81-114`
 - Delete or stop rendering: `src/components/MigrationPanel.jsx`
 - Test: `tests/appGameViewMutation.test.js`, `tests/appIntegration.test.js`
+- Test: `tests/useCloudSync.runtime.test.js`
 
 - [ ] **Step 1: Add a failing automatic-migration integration test**
 
