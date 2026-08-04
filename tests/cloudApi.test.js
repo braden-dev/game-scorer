@@ -309,10 +309,15 @@ test('softDelete returns complete round tombstone metadata', async () => {
     id: 'r_one', game_id: 'g_one', round_index: 3, entries: { p_one: { score: 7 } },
     updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
   }
-  const client = fakeClient({ rounds: [row] })
+  const client = mutableClient({ rounds: [row] })
   const result = await createCloudApi(client).softDelete('rounds', 'r_one', '2026-01-03T00:00:00.000Z')
 
-  assert.deepEqual(result, row)
+  assert.deepEqual(result, {
+    ...row,
+    updated_at: '2026-01-03T00:00:00.000Z',
+    deleted_at: '2026-01-03T00:00:00.000Z',
+  })
+  assert.deepEqual(client.rows('rounds'), [result])
   assert.deepEqual(client.calls.filter((call) => call.operation === 'select'), [
     { table: 'rounds', operation: 'select', columns: '*' },
     { table: 'rounds', operation: 'select', columns: '*' },
