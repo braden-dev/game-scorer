@@ -113,3 +113,33 @@ test('NewGame makes exact-name reuse and duplicate creation explicit', async () 
   startButton.props.onClick()
   assert.deepEqual(startedPlayers.map((player) => player.id), ['p_john', 'p_mary'])
 })
+
+test('submitting an exact existing name selects that person instead of silently doing nothing', async () => {
+  const NewGame = await loadNewGame()
+  const added = []
+  const props = {
+    gameId: 'farkle',
+    roster: [{ id: 'p_john', name: 'John' }, { id: 'p_mary', name: 'Mary' }],
+    onCancel() {},
+    onStart() {},
+    onAddToRoster(name) { added.push(name); return { id: 'p_new', name } },
+    onRemoveFromRoster() {},
+  }
+
+  globalThis.__newGameReactState?.slots.splice(0)
+  globalThis.__newGameReactState.cursor = 0
+  const firstTree = NewGame(props)
+  const input = findElement(firstTree, (element) => element.type === 'input' && element.props?.type === 'text')
+  input.props.onChange({ target: { value: 'John' } })
+
+  globalThis.__newGameReactState.cursor = 0
+  const searchedTree = NewGame(props)
+  const form = findElement(searchedTree, (element) => element.type === 'form' && element.props?.className === 'add-player')
+  form.props.onSubmit({ preventDefault() {} })
+
+  globalThis.__newGameReactState.cursor = 0
+  const selectedTree = NewGame(props)
+  const order = findElement(selectedTree, (element) => element.type === 'ol' && element.props?.className === 'turn-order')
+  assert.match(textOf(order), /John/)
+  assert.deepEqual(added, [])
+})

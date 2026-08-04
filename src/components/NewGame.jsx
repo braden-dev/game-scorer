@@ -20,7 +20,11 @@ export default function NewGame({ gameId, roster, onCancel, onStart, onAddToRost
     const trimmed = name.trim()
     if (!trimmed) return
     const existing = filterPeople(roster).find((p) => p.name.trim().toLowerCase() === trimmed.toLowerCase())
-    if (existing) return
+    if (existing) {
+      toggle(existing.id)
+      setName('')
+      return
+    }
     createPerson(trimmed)
   }
 

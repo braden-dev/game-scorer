@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { evaluate, getGameDef } from '../games/index.js'
+import { evaluate, getGameDef, normalizeGameSettings } from '../games/index.js'
 import { uid } from '../lib/util.js'
 import { useWakeLock } from '../lib/useWakeLock.js'
 import Modal from './Modal.jsx'
@@ -8,28 +8,10 @@ import RoundSheet from './RoundSheet.jsx'
 import PlayerChip from './PlayerChip.jsx'
 import { SettingsForm } from './fields.jsx'
 
-function normalizedSettings(def, settings) {
-  const source = settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {}
-  const next = { ...def.defaultSettings, ...source }
-  for (const [key, defaultValue] of Object.entries(def.defaultSettings)) {
-    const value = source[key]
-    if (typeof defaultValue === 'number') {
-      next[key] = typeof value === 'number' && Number.isFinite(value) ? value : defaultValue
-    } else if (typeof defaultValue === 'string') {
-      next[key] = typeof value === 'string' ? value : defaultValue
-    } else if (typeof defaultValue === 'boolean') {
-      next[key] = typeof value === 'boolean' ? value : defaultValue
-    } else if (value === null || value === undefined) {
-      next[key] = defaultValue
-    }
-  }
-  return next
-}
-
 export default function GameView({ game: rawGame, roster, onUpdate, onBack, onRematch, onAddToRoster }) {
   const gameDef = getGameDef(rawGame.gameId)
   const game = gameDef
-    ? { ...rawGame, settings: normalizedSettings(gameDef, rawGame.settings) }
+    ? { ...rawGame, settings: normalizeGameSettings(rawGame.gameId, rawGame.settings) }
     : rawGame
   const { def, totals, standings, status } = evaluate(game)
   const [sheet, setSheet] = useState(null) // { roundIndex, existing }

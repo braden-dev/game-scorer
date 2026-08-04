@@ -13,6 +13,28 @@ export function getGameDef(id) {
   return typeof id === 'string' && Object.hasOwn(GAMES_BY_ID, id) ? GAMES_BY_ID[id] : undefined
 }
 
+export function normalizeGameSettings(gameId, settings) {
+  const def = getGameDef(gameId)
+  if (!def) return settings
+  const source = settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {}
+  const next = { ...def.defaultSettings, ...source }
+
+  for (const [key, defaultValue] of Object.entries(def.defaultSettings)) {
+    const value = source[key]
+    if (typeof defaultValue === 'number') {
+      next[key] = typeof value === 'number' && Number.isFinite(value) ? value : defaultValue
+    } else if (typeof defaultValue === 'string') {
+      next[key] = typeof value === 'string' ? value : defaultValue
+    } else if (typeof defaultValue === 'boolean') {
+      next[key] = typeof value === 'boolean' ? value : defaultValue
+    } else if (value === null || value === undefined) {
+      next[key] = defaultValue
+    }
+  }
+
+  return next
+}
+
 /**
  * A game stores the settings it was created with, so one started before a new
  * house rule shipped is missing that key entirely — which reads as `undefined`
@@ -27,7 +49,7 @@ export function migrateState(state) {
     games: state.games.map((game) => {
       const def = GAMES_BY_ID[game.gameId]
       if (!def) return game
-      return { ...game, settings: { ...def.defaultSettings, ...game.settings } }
+      return { ...game, settings: normalizeGameSettings(game.gameId, game.settings) }
     }),
   }
 }
@@ -35,9 +57,10 @@ export function migrateState(state) {
 /** Totals + standings + finished state for a saved game. */
 export function evaluate(game) {
   const def = getGameDef(game.gameId)
-  const totals = def.computeTotals(game)
-  const status = def.checkStatus(game, totals)
-  const standings = game.players
+  const normalizedGame = { ...game, settings: normalizeGameSettings(game.gameId, game.settings) }
+  const totals = def.computeTotals(normalizedGame)
+  const status = def.checkStatus(normalizedGame, totals)
+  const standings = normalizedGame.players
     .map((p, index) => ({ player: p, index, ...totals[p.id] }))
     .sort((a, b) => (def.betterIs === 'low' ? a.total - b.total : b.total - a.total))
 

@@ -285,7 +285,8 @@ export default function App() {
   const activeGame = playableGames.find((g) => g.id === requestedGameId) || null
 
   const addToRoster = (name) => {
-    const person = { id: uid('p'), name }
+    const version = Date.parse(migrationVersion(loadSyncStore().lastSyncAt))
+    const person = { id: uid('p'), name, createdAt: version, updatedAt: version }
     applyMutation(
       (prev) => ({ ...prev, roster: [...prev.roster, person] }),
       stateChangeMutation,

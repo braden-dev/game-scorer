@@ -383,6 +383,28 @@ test('JSON import stamps new rows with a fresh monotonic sync version and preser
   assert.equal(mutation.payload.rows.games.find((game) => game.id === 'g_imported').created_at, '1970-01-01T00:00:00.123Z')
 })
 
+test('new people receive current timestamps before their first incremental upsert', async () => {
+  const App = await loadComponent('src/App.jsx')
+  prepareStorage({ games: [], roster: [], activeGameId: null })
+  globalThis.window.location = { pathname: '/new-game/farkle' }
+  globalThis.localStorage.setItem('gamescorer.cloud.v1', JSON.stringify({
+    lastSyncAt: '2026-08-04T00:00:00.000Z',
+    outbox: [],
+  }))
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  assert.equal(appContent(appTree).type.name, 'NewGame')
+  appContent(appTree).props.onAddToRoster('New Person')
+
+  const mutation = globalThis.__scorebookTestSync.mutations[0]
+  const person = mutation.payload.rows.people.find((candidate) => candidate.name === 'New Person')
+  assert.ok(person)
+  assert.ok(Date.parse(person.updated_at) > Date.parse('2026-08-04T00:00:00.000Z'))
+  assert.equal(person.created_at, person.updated_at)
+})
+
 test('editing a synced round advances only that round in the queued mutation', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()

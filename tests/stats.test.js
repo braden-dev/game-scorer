@@ -209,6 +209,17 @@ test('tracks the best final rank from finished games', () => {
   assert.equal(buildPersonStats('p3', [farkle('no-finish', { p1: 100, p2: 50 })]).bestFinish, null)
 })
 
+test('normalizes partial known-game settings before evaluating stats', () => {
+  const partialSettingsGame = {
+    ...farkle('partial-settings', { p1: 10000, p2: 5000 }),
+    settings: {},
+  }
+
+  assert.doesNotThrow(() => buildPersonStats('p1', [partialSettingsGame]))
+  assert.equal(buildPersonStats('p1', [partialSettingsGame]).games, 1)
+  assert.equal(buildPersonStats('p1', [partialSettingsGame]).bestFinish, 1)
+})
+
 test('uses createdAt as the chronological fallback when finishedAt is missing', () => {
   const games = [
     dated(farkle('later', { p1: 100, p2: 50 }), null, 300),
