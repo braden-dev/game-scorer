@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cloudConfigured, supabase } from './supabase.js'
 import { createCloudApi } from './cloudApi.js'
-import { copyCloudMetadata, fromRemoteRows, hasCloudMetadata, toRemoteRows } from './cloudState.js'
+import { copyCloudMetadata, fromRemoteRows, hasCloudMetadata, mergeCloudCache, toRemoteRows } from './cloudState.js'
 import {
   conservativeSyncCursor,
   createInFlightSync,
@@ -34,13 +34,8 @@ function hasCachedState(store) {
   return store.cache.games.length > 0 || store.cache.roster.length > 0 || hasCloudMetadata(store.cache)
 }
 
-function cacheForState(state) {
-  return copyCloudMetadata({
-    ...(state ?? { games: [], roster: [] }),
-    games: Array.isArray(state?.games) ? state.games : [],
-    roster: Array.isArray(state?.roster) ? state.roster : [],
-    activeGameId: state?.activeGameId ?? null,
-  }, state)
+function cacheForState(state, metadataSource = state) {
+  return mergeCloudCache(metadataSource, state)
 }
 
 function remoteKey(entity) {
@@ -192,7 +187,7 @@ export function useCloudSync(currentState, setState) {
     const store = storeRef.current ?? loadSyncStore()
     const next = enqueueMutation({
       ...store,
-      cache: cacheForState(stateRef.current),
+      cache: cacheForState(stateRef.current, store.cache),
     }, {
       id: mutation.id ?? uid('m'),
       createdAt: mutation.createdAt ?? Date.now(),

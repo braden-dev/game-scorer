@@ -492,10 +492,11 @@ const SYNC_CURSOR_OVERLAP_MS = 60_000
 export function conservativeSyncCursor(previous, startedAt) {
   const startedMilliseconds = timestamp(startedAt) ?? Date.now()
   const previousMilliseconds = timestamp(previous)
-  const anchor = previousMilliseconds === null
-    ? startedMilliseconds
-    : Math.min(previousMilliseconds, startedMilliseconds)
-  return new Date(Math.max(0, anchor - SYNC_CURSOR_OVERLAP_MS)).toISOString()
+  const overlapCursor = startedMilliseconds - SYNC_CURSOR_OVERLAP_MS
+  const cursor = previousMilliseconds === null
+    ? overlapCursor
+    : Math.max(previousMilliseconds, overlapCursor)
+  return new Date(Math.max(0, cursor)).toISOString()
 }
 
 export function createInFlightSync(operation) {

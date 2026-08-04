@@ -7,6 +7,7 @@ import {
   mergeSyncStore,
   registerSyncListeners,
 } from '../src/lib/sync.js'
+import { fromRemoteRows, hasCloudMetadata, mergeCloudCache } from '../src/lib/cloudState.js'
 
 test('retains an outbox mutation enqueued while a deferred sync update is pending', async () => {
   let release
@@ -32,6 +33,47 @@ test('uses a conservative cursor for updates concurrent with deferred reads', as
   const row = await read
 
   assert.ok(Date.parse(cursor) <= Date.parse(row.updated_at))
+})
+
+test('advances or holds the successful cursor without drifting backward', () => {
+  const previous = '2026-01-03T12:00:00.000Z'
+  const first = conservativeSyncCursor(previous, '2026-01-03T12:05:00.000Z')
+  const second = conservativeSyncCursor(first, '2026-01-03T12:06:00.000Z')
+
+  assert.ok(Date.parse(first) >= Date.parse(previous))
+  assert.ok(Date.parse(second) >= Date.parse(first))
+  assert.equal(
+    conservativeSyncCursor('invalid', '2026-01-03T12:00:00.000Z'),
+    '2026-01-03T11:59:00.000Z',
+  )
+})
+
+test('preserves cloud metadata when an enqueue receives a spread-only nested state', () => {
+  const metadataCache = fromRemoteRows({
+    people: [{
+      id: 'p_deleted',
+      name: 'Deleted',
+      updated_at: '2026-01-02T00:00:00.000Z',
+      deleted_at: '2026-01-02T00:00:00.000Z',
+    }],
+    games: [],
+    game_players: [],
+    rounds: [],
+  })
+  const spreadOnlyState = {
+    ...metadataCache,
+    games: [],
+    roster: [{ id: 'p_new', name: 'New' }],
+  }
+
+  const updatedCache = mergeCloudCache(metadataCache, spreadOnlyState)
+
+  assert.equal(hasCloudMetadata(spreadOnlyState), false)
+  assert.equal(hasCloudMetadata(updatedCache), true)
+  assert.equal(
+    updatedCache[Symbol.for('gamescorer.cloudMetadata')].roster[0].deletedAt,
+    '2026-01-02T00:00:00.000Z',
+  )
 })
 
 test('compacts incremental metadata by entity key and keeps the newest version', () => {

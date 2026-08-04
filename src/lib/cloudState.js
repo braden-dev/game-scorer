@@ -137,6 +137,18 @@ export function hasCloudMetadata(state) {
   return state?.[CLOUD_METADATA] !== undefined
 }
 
+export function mergeCloudCache(cache, state) {
+  const next = {
+    ...(state ?? { games: [], roster: [] }),
+    games: Array.isArray(state?.games) ? state.games : [],
+    roster: Array.isArray(state?.roster) ? state.roster : [],
+    activeGameId: state?.activeGameId ?? null,
+  }
+  copyCloudMetadata(next, state)
+  copyCloudMetadata(next, cache)
+  return next
+}
+
 function metadataRecords(metadata, key) {
   return rows(metadata?.[key])
 }
