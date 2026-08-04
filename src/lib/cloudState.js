@@ -213,6 +213,7 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = nul
     nextMetadata.games = addCloudTombstone(nextMetadata, 'games', { ...priorGame, ...tombstone, id: gameId })
   } else if (group === 'gamePlayers' || group === 'rounds') {
     const roundDetails = group === 'rounds' && details && typeof details === 'object' ? details : null
+    const playerDetails = group === 'gamePlayers' && details && typeof details === 'object' ? details : null
     const requestedId = mutationPart(id, group === 'gamePlayers' ? 'personId' : 'id', group === 'gamePlayers' ? 'person_id' : 'id')
     const priorRound = group === 'rounds'
       ? metadataRecords(metadata, 'rounds')
@@ -232,7 +233,17 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = nul
       if (group === 'gamePlayers') {
         const players = rows(game.players)
         const matched = players.filter((player) => player.id === requestedId)
-        if (matched.length) records.push({ ...tombstone, gameId: game.id, id: requestedId })
+        if (matched.length) {
+          const player = matched[0]
+          records.push({
+            ...player,
+            ...tombstone,
+            gameId: game.id,
+            id: requestedId,
+            seatOrder: playerDetails?.seatOrder ?? player.seatOrder,
+            nameSnapshot: playerDetails?.nameSnapshot ?? player.nameSnapshot ?? player.name,
+          })
+        }
         return matched.length ? { ...game, players: players.filter((player) => player.id !== requestedId) } : game
       }
       const rounds = rows(game.rounds)
@@ -251,7 +262,10 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = nul
     })
     if (records.length === 0) {
       const record = { ...tombstone, gameId: requestedGameId ?? null, id: requestedId }
-      if (group === 'rounds') {
+      if (group === 'gamePlayers') {
+        record.seatOrder = playerDetails?.seatOrder
+        record.nameSnapshot = playerDetails?.nameSnapshot
+      } else if (group === 'rounds') {
         record.roundIndex = requestedRoundIndex
         record.entries = requestedEntries ?? {}
       }

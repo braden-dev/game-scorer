@@ -53,10 +53,13 @@ export default function App() {
 
     if (configured) {
       saveStateToCloudCache(next)
-      const mutation = typeof mutationFactory === 'function'
+      const mutationResult = typeof mutationFactory === 'function'
         ? mutationFactory(next, previous)
         : mutationFactory
-      if (mutation) sync.enqueueStateMutation({ ...mutation, state: next })
+      const mutations = Array.isArray(mutationResult) ? mutationResult : [mutationResult]
+      for (const mutation of mutations) {
+        if (mutation) sync.enqueueStateMutation({ ...mutation, state: next })
+      }
     }
     return next
   }, [configured, sync])
@@ -126,8 +129,11 @@ export default function App() {
         const removedRound = previousGame?.rounds?.find(
           (round) => !next.rounds.some((candidate) => candidate.id === round.id),
         )
-        if (!removedRound) return stateChangeMutation(nextState, previousState)
-        return {
+        const removedPlayers = previousGame?.players?.filter(
+          (player) => !next.players.some((candidate) => candidate.id === player.id),
+        ) ?? []
+        const mutations = [stateChangeMutation(nextState, previousState)]
+        if (removedRound) mutations.push({
           id: uid('m'),
           entity: 'rounds',
           entityId: removedRound.id,
@@ -138,7 +144,21 @@ export default function App() {
             roundIndex: previousGame.rounds.indexOf(removedRound),
             entries: removedRound.entries,
           },
-        }
+        })
+        mutations.push(...removedPlayers.map((player) => ({
+          id: uid('m'),
+          entity: 'game_players',
+          entityId: { gameId: next.id, personId: player.id },
+          operation: 'softDelete',
+          updatedAt: next.updatedAt,
+          payload: {
+            gameId: next.id,
+            personId: player.id,
+            seatOrder: previousGame.players.indexOf(player),
+            nameSnapshot: player.name,
+          },
+        })))
+        return mutations.length === 1 ? mutations[0] : mutations
       },
     )
   }
