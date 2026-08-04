@@ -1178,7 +1178,7 @@ test('App popstate subscription clears activeGameId when leaving a game route', 
   assert.equal(JSON.parse(globalThis.localStorage.getItem('gamescorer.v1')).activeGameId, null)
 })
 
-test('App surfaces the exact conflict notice on routes without DataPanel', async () => {
+test('App does not surface a global conflict notice on routes without DataPanel', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()
   prepareStorage(state)
@@ -1191,10 +1191,5 @@ test('App surfaces the exact conflict notice on routes without DataPanel', async
 
   assert.equal(appTree.type.name, 'AppShell')
   assert.equal(appTree.props.content.type.name, 'People')
-  assert.equal(appTree.props.syncNotice.props.role, 'status')
-  assert.equal(appTree.props.syncNotice.props['aria-live'], 'polite')
-  assert.equal(
-    textOf(appTree.props.syncNotice),
-    'This was changed on another device. The shared version is now shown.',
-  )
+  assert.equal(appTree.props.syncNotice, undefined)
 })

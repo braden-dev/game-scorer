@@ -1662,6 +1662,92 @@ test('automatically retries a failed replay with bounded backoff', async () => {
   }
 })
 
+test('continues pending retries at a steady delay and resets after success', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const timers = []
+  let upsertCalls = 0
+  let shouldFail = true
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {
+      upsertCalls += 1
+      if (shouldFail) throw new Error('temporary network failure')
+      return { people: [], games: [], gamePlayers: [], rounds: [] }
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  const flush = () => new Promise((resolve) => realSetTimeout(resolve, 0))
+  const activeTimers = () => timers.filter((timer) => !timer.cancelled && !timer.ran)
+  const runNextTimer = async () => {
+    const timer = activeTimers()[0]
+    assert.ok(timer)
+    timer.ran = true
+    timer.callback()
+    await act(async () => { await flush() })
+    return timer
+  }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true, api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => {
+      root.render(React.createElement(Harness))
+      await flush()
+    })
+
+    globalThis.setTimeout = (callback, delay) => {
+      const timer = { callback, delay, cancelled: false, ran: false }
+      timers.push(timer)
+      return timer
+    }
+    globalThis.clearTimeout = (timer) => { if (timer) timer.cancelled = true }
+
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_steady_retry', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{ id: 'p_steady', name: 'Steady', updated_at: '2026-01-03T00:00:00.000Z' }] } },
+      })
+      await flush()
+    })
+
+    assert.equal(activeTimers()[0].delay, 50)
+    for (let attempt = 0; attempt < 5; attempt += 1) await runNextTimer()
+    assert.ok(upsertCalls >= 6)
+    assert.equal(activeTimers()[0].delay, 30_000)
+
+    shouldFail = false
+    await runNextTimer()
+    assert.equal(observed.hook.pendingCount, 0)
+    assert.equal(activeTimers().length, 0)
+
+    await act(async () => {
+      shouldFail = true
+      observed.hook.enqueueStateMutation({
+        id: 'm_reset_retry', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{ id: 'p_reset', name: 'Reset', updated_at: '2026-01-04T00:00:00.000Z' }] } },
+      })
+      await flush()
+    })
+    assert.ok(upsertCalls >= 8)
+    assert.equal(activeTimers()[0].delay, 50)
+  } finally {
+    await act(async () => { root.unmount() })
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+    browser.restore()
+  }
+})
+
 test('schedules one follow-up replay for a mutation added during replay', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
@@ -1705,7 +1791,7 @@ test('schedules one follow-up replay for a mutation added during replay', async 
       })
     })
     firstReplay.resolve()
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 75)) })
 
     assert.equal(rowsSent.length, 2)
     assert.equal(rowsSent[1].people[0].id, 'p_second')

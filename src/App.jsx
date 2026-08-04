@@ -6,7 +6,7 @@ import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { clone, loadSyncStore } from './lib/sync.js'
 import { filterRowsAlreadyInCloud, findCloudTombstone, mergeMigrationState, stampMigrationRows, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
-import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
+import { useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
@@ -105,8 +105,8 @@ function restoreExpectedTombstone(entity, id, parentId, fallbackAt) {
   }
 }
 
-export function AppShell({ content, undoToast, syncNotice }) {
-  return <>{syncNotice}{content}{undoToast}</>
+export function AppShell({ content, undoToast }) {
+  return <>{content}{undoToast}</>
 }
 
 export default function App() {
@@ -645,10 +645,6 @@ export default function App() {
     ? requestedNewGameId
     : null
 
-  const syncNotice = sync?.error === CONFLICT_MESSAGE ? (
-    <p className="global-sync-notice" role="status" aria-live="polite">{CONFLICT_MESSAGE}</p>
-  ) : null
-
   let content
   if (currentNewGameId) {
     content = (
@@ -717,5 +713,5 @@ export default function App() {
     )
   }
 
-  return <AppShell content={content} undoToast={undoToast} syncNotice={syncNotice} />
+  return <AppShell content={content} undoToast={undoToast} />
 }

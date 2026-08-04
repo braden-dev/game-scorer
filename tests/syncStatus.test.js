@@ -25,6 +25,23 @@ test('renders retry behavior for a sync error and nothing for clean synced state
   assert.equal(retries, 1)
 })
 
+test('renders quiet offline and pending statuses', () => {
+  const offlineMarkup = renderToStaticMarkup(createSyncStatusElement({
+    status: 'offline',
+    pendingCount: 2,
+    syncNow: () => {},
+  }))
+  const pendingMarkup = renderToStaticMarkup(createSyncStatusElement({
+    status: 'pending',
+    pendingCount: 2,
+    syncNow: () => {},
+  }))
+
+  assert.match(offlineMarkup, /Will retry when online/)
+  assert.doesNotMatch(offlineMarkup, /Retry/)
+  assert.equal(pendingMarkup, '<div role="status" aria-live="polite">Saving locally</div>')
+})
+
 test('renders terminal conflicts without an action button', () => {
   const conflictElement = createSyncStatusElement({
     status: 'conflict',
@@ -33,7 +50,8 @@ test('renders terminal conflicts without an action button', () => {
   })
 
   const conflictMarkup = renderToStaticMarkup(conflictElement)
-  assert.match(conflictMarkup, /Sync conflict/)
+  assert.match(conflictMarkup, /review shared result/)
+  assert.doesNotMatch(conflictMarkup, /local changes kept/)
   assert.doesNotMatch(conflictMarkup, /Retry/)
   assert.doesNotMatch(conflictMarkup, /<button/)
 })

@@ -14,10 +14,10 @@ export function createSyncStatusElement({ status, pendingCount = 0, syncNow }) {
     )
   }
 
-  if (status === 'offline') return React.createElement('div', props, 'Offline')
+  if (status === 'offline') return React.createElement('div', props, 'Will retry when online')
   if (status === 'syncing') return React.createElement('div', props, 'Syncing…')
   if (status === 'pending' || pendingCount > 0) {
-    return React.createElement('div', props, `Saving locally · ${pendingCount} pending`)
+    return React.createElement('div', props, 'Saving locally')
   }
   return null
 }

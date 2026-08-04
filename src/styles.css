@@ -176,20 +176,6 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .data-status.good { color: var(--good); }
 .data-status.bad { color: var(--bad); }
 .data-status.conflict { color: var(--text-dim); }
-.global-sync-notice {
-  width: 100%;
-  max-width: 620px;
-  margin: 0 auto 16px;
-  padding: 10px 14px;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
-  color: var(--text-dim);
-  font-size: 13px;
-  line-height: 1.35;
-  text-align: center;
-}
 .data-head {
   font-size: 13px;
   text-transform: uppercase;

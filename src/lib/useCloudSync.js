@@ -20,6 +20,7 @@ const REMOTE_KEYS = ['people', 'games', 'gamePlayers', 'rounds']
 const RETRY_BASE_DELAY_MS = 50
 const RETRY_MAX_DELAY_MS = 1000
 const MAX_AUTOMATIC_RETRIES = 5
+const RETRY_STEADY_DELAY_MS = 30_000
 export const CONFLICT_MESSAGE = 'Sync conflict; local changes kept. Retry when ready.'
 const TERMINAL_CONFLICT_MESSAGE = 'Sync conflict; local changes kept. Please review the shared result.'
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
@@ -282,6 +283,23 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     retryAttemptsRef.current = 0
   }
 
+  const scheduleRetry = useCallback(() => {
+    const hasReplayableWork = storeRef.current?.outbox.some(isReplayableMutation)
+    if (!mountedRef.current || !online() || !hasReplayableWork || retryTimerRef.current) return
+
+    const delay = retryAttemptsRef.current < MAX_AUTOMATIC_RETRIES
+      ? Math.min(
+        RETRY_BASE_DELAY_MS * (2 ** retryAttemptsRef.current),
+        RETRY_MAX_DELAY_MS,
+      )
+      : RETRY_STEADY_DELAY_MS
+    retryAttemptsRef.current += 1
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null
+      if (mountedRef.current) void syncNowRef.current?.()
+    }, delay)
+  }, [])
+
   useEffect(() => {
     stateRef.current = currentState
   }, [currentState])
@@ -508,11 +526,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       const result = finalConflictMessage || pendingAfterReplay
         ? { ok: false, reason: 'error', fullSnapshot: initial }
         : { ok: true, fullSnapshot: initial }
-      if (pendingAfterReplay) {
-        setTimeout(() => {
-          if (mountedRef.current && storeRef.current?.outbox.some(isReplayableMutation)) void syncNow()
-        }, 0)
-      }
+      if (pendingAfterReplay) scheduleRetry()
       return result
     } catch (syncError) {
       const errorMessage = messageFor(syncError)
@@ -521,21 +535,10 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         setError(errorMessage)
         setStatus(online() ? 'error' : 'offline')
       }
-      if (online() && mountedRef.current && !retryTimerRef.current
-        && retryAttemptsRef.current < MAX_AUTOMATIC_RETRIES) {
-        const delay = Math.min(
-          RETRY_BASE_DELAY_MS * (2 ** retryAttemptsRef.current),
-          RETRY_MAX_DELAY_MS,
-        )
-        retryAttemptsRef.current += 1
-        retryTimerRef.current = setTimeout(() => {
-          retryTimerRef.current = null
-          if (mountedRef.current) void syncNowRef.current?.()
-        }, delay)
-      }
+      scheduleRetry()
       return { ok: false, reason: 'error', fullSnapshot: initial }
     }
-  }, [configured, publishStore, replayMutation, setState])
+  }, [configured, publishStore, replayMutation, scheduleRetry, setState])
 
   const syncNow = useCallback((options) => {
     if (!syncRunnerRef.current) syncRunnerRef.current = createSyncRunner(runSync)
