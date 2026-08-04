@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createCloudApi } from '../src/lib/cloudApi.js'
 import { toRemoteRows } from '../src/lib/cloudState.js'
 import { loadSyncStore } from '../src/lib/sync.js'
 
@@ -10,6 +11,75 @@ class MemoryStorage {
 
   getItem(key) { return this.#values.get(key) ?? null }
   setItem(key, value) { this.#values.set(key, String(value)) }
+}
+
+function mutableCloudClient(initialRows) {
+  const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
+  const calls = []
+
+  return {
+    calls,
+    rows(table) { return tables[table] ?? [] },
+    from(table) {
+      let action = 'select'
+      let payload = null
+      const filters = []
+      const query = {
+        select(columns) {
+          calls.push({ table, operation: 'select', columns })
+          return query
+        },
+        order(column, options) {
+          calls.push({ table, operation: 'order', column, options })
+          return query
+        },
+        range(from, to) {
+          calls.push({ table, operation: 'range', from, to })
+          return query
+        },
+        gte(column, value) {
+          calls.push({ table, operation: 'gte', column, value })
+          filters.push((row) => row[column] >= value)
+          return query
+        },
+        eq(column, value) {
+          calls.push({ table, operation: 'eq', column, value })
+          filters.push((row) => row[column] === value)
+          return query
+        },
+        is(column, value) {
+          calls.push({ table, operation: 'is', column, value })
+          filters.push((row) => (row[column] ?? null) === value)
+          return query
+        },
+        update(nextPayload) {
+          action = 'update'
+          payload = nextPayload
+          calls.push({ table, operation: 'update', payload: nextPayload })
+          return query
+        },
+        then(resolve, reject) {
+          try {
+            const tableRows = tables[table] ?? (tables[table] = [])
+            const matches = tableRows.filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
+            if (action === 'update') {
+              for (const row of matches) Object.assign(row, payload)
+            }
+            return Promise.resolve({ data: matches, error: null }).then(resolve, reject)
+          } catch (error) {
+            return Promise.reject(error).then(resolve, reject)
+          }
+        },
+        upsert(rows, options) {
+          action = 'upsert'
+          payload = rows
+          calls.push({ table, operation: 'upsert', payload: rows, options })
+          return query
+        },
+      }
+      return query
+    },
+  }
 }
 
 function deferred() {
@@ -477,6 +547,109 @@ test('keeps a scalar round tombstone after local removal and successful replay',
       id: 'r_removed', game_id: 'g_round', round_index: 0, entries: { p_one: { score: 1 } },
       updated_at: '2026-01-04T00:00:00.000Z', deleted_at: '2026-01-03T00:00:00.000Z',
     }])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('replays a composite game player tombstone through cloudApi and persists cache metadata', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const updatedAt = '2026-01-03T00:00:00.000Z'
+  const existingUpdatedAt = '2026-01-01T00:00:00.000Z'
+  const client = mutableCloudClient({
+    people: [
+      { id: 'p_keep', name: 'Keep', updated_at: existingUpdatedAt, deleted_at: null },
+      { id: 'p_remove', name: 'Remove', updated_at: existingUpdatedAt, deleted_at: null },
+    ],
+    games: [{
+      id: 'g_players', game_id: 'farkle', created_at: existingUpdatedAt,
+      updated_at: existingUpdatedAt, finished_at: null, settings: {}, deleted_at: null,
+    }],
+    game_players: [
+      { game_id: 'g_players', person_id: 'p_keep', seat_order: 0, name_snapshot: 'Keep', updated_at: existingUpdatedAt, deleted_at: null },
+      { game_id: 'g_players', person_id: 'p_remove', seat_order: 1, name_snapshot: 'Remove', updated_at: existingUpdatedAt, deleted_at: null },
+    ],
+    rounds: [],
+  })
+  const api = createCloudApi(client)
+  const updates = []
+  const observed = { hook: null }
+  const state = {
+    activeGameId: 'g_players',
+    roster: [{ id: 'p_keep', name: 'Keep' }, { id: 'p_remove', name: 'Remove' }],
+    games: [{
+      id: 'g_players', gameId: 'farkle', createdAt: Date.parse(existingUpdatedAt),
+      updatedAt: Date.parse(existingUpdatedAt),
+      players: [{ id: 'p_keep', name: 'Keep' }, { id: 'p_remove', name: 'Remove' }],
+      settings: {}, rounds: [], finishedAt: null,
+    }],
+  }
+  function Harness() {
+    observed.hook = useCloudSync(state, (nextState) => updates.push(nextState), { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_player_remove',
+        entity: 'game_players',
+        entityId: { gameId: 'g_players', personId: 'p_remove' },
+        operation: 'softDelete',
+        updatedAt,
+        payload: {
+          gameId: 'g_players',
+          personId: 'p_remove',
+          seatOrder: 1,
+          nameSnapshot: 'Remove',
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const playerEqCalls = client.calls
+      .filter((call) => call.table === 'game_players' && call.operation === 'eq')
+      .map((call) => [call.column, call.value])
+    assert.deepEqual(playerEqCalls, [
+      ['game_id', 'g_players'],
+      ['person_id', 'p_remove'],
+      ['game_id', 'g_players'],
+      ['person_id', 'p_remove'],
+      ['updated_at', existingUpdatedAt],
+    ])
+    assert.deepEqual(client.calls.find((call) => call.table === 'game_players' && call.operation === 'update'), {
+      table: 'game_players',
+      operation: 'update',
+      payload: { deleted_at: updatedAt, updated_at: updatedAt },
+    })
+    assert.deepEqual(client.rows('game_players').find((row) => row.person_id === 'p_remove'), {
+      game_id: 'g_players',
+      person_id: 'p_remove',
+      seat_order: 1,
+      name_snapshot: 'Remove',
+      updated_at: updatedAt,
+      deleted_at: updatedAt,
+    })
+
+    const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.deepEqual(stored.outbox, [])
+    assert.deepEqual(stored.cache.games[0].players, [{ id: 'p_keep', name: 'Keep' }])
+    assert.deepEqual(stored.cache.__cloudMetadata.gamePlayers, [{
+      gameId: 'g_players',
+      id: 'p_remove',
+      seatOrder: 1,
+      nameSnapshot: 'Remove',
+      updatedAt: Date.parse(updatedAt),
+      deletedAt: updatedAt,
+    }])
+    assert.equal(loadSyncStore(globalThis.localStorage).outbox.length, 0)
+    assert.equal(updates.at(-1).games[0].players.some((player) => player.id === 'p_remove'), false)
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
