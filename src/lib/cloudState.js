@@ -545,6 +545,16 @@ export function toRemoteRows(state) {
   return { people, games, gamePlayers, rounds }
 }
 
+export function stampMigrationRows(remoteRows, updatedAt = new Date().toISOString()) {
+  const version = isoTimestamp(updatedAt) ?? new Date().toISOString()
+  return Object.fromEntries(
+    ['people', 'games', 'gamePlayers', 'rounds'].map((key) => [
+      key,
+      rows(remoteRows?.[key]).map((row) => ({ ...row, updated_at: version })),
+    ]),
+  )
+}
+
 export function migrationCounts(state) {
   const allGames = rows(state?.games)
   const games = allGames.filter(isSupportedGame)

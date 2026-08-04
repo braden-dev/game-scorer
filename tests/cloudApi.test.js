@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createCloudApi } from '../src/lib/cloudApi.js'
+import { stampMigrationRows, toRemoteRows } from '../src/lib/cloudState.js'
 
 function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
   const calls = []
@@ -227,6 +228,54 @@ test('fetchRowsUpdatedSince filters every table without filtering tombstones', a
     { table: 'game_players', operation: 'gte', column: 'updated_at', value: since },
     { table: 'rounds', operation: 'gte', column: 'updated_at', value: since },
   ])
+})
+
+test('migration rows use a fresh consistent version visible to a stale incremental peer', async () => {
+  const localRows = toRemoteRows({
+    roster: [{ id: 'p_migration', name: 'Migration Player', createdAt: 100 }],
+    games: [{
+      id: 'g_migration', gameId: 'farkle', createdAt: 100, updatedAt: 200,
+      players: [{ id: 'p_migration', name: 'Migration Player' }], settings: {},
+      rounds: [{ id: 'r_migration', entries: { p_migration: { score: 42 } }, updatedAt: 300 }],
+      finishedAt: null,
+    }],
+  })
+  localRows.people.push({
+    id: 'p_deleted', name: 'Deleted', normalized_name: 'deleted',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:10.000Z', deleted_at: '2026-01-01T00:00:10.000Z',
+  })
+  const migrationVersion = '2026-08-05T00:00:01.000Z'
+  const stampedRows = stampMigrationRows(localRows, migrationVersion)
+  const client = mutableClient({})
+  const api = createCloudApi(client)
+
+  await api.upsertRows(stampedRows)
+  const stalePeerRows = await api.fetchRowsUpdatedSince('2026-08-04T23:59:59.000Z')
+
+  assert.equal(stampedRows.games[0].updated_at, migrationVersion)
+  assert.equal(stampedRows.rounds[0].updated_at, migrationVersion)
+  assert.equal(stampedRows.games[0].created_at, localRows.games[0].created_at)
+  assert.equal(stampedRows.people.find(({ id }) => id === 'p_deleted').deleted_at, '2026-01-01T00:00:10.000Z')
+  assert.deepEqual(stalePeerRows.games.map(({ id }) => id), ['g_migration'])
+  assert.deepEqual(stalePeerRows.rounds.map(({ id }) => id), ['r_migration'])
+})
+
+test('restore is idempotent when an offline delete never reached the live remote row', async () => {
+  const liveRow = {
+    id: 'r_offline_undo', game_id: 'g_offline_undo', round_index: 0,
+    entries: { p_one: { score: 42 } },
+    updated_at: '2026-08-04T00:00:00.000Z', deleted_at: null,
+  }
+  const client = mutableClient({ rounds: [liveRow] })
+  const result = await createCloudApi(client).restoreRows(
+    { rounds: [{ ...liveRow, updated_at: '2026-08-04T00:00:20.000Z' }] },
+    { rounds: [{ id: liveRow.id, game_id: liveRow.game_id, updated_at: '2026-08-04T00:00:10.000Z', deleted_at: '2026-08-04T00:00:10.000Z' }] },
+  )
+
+  assert.deepEqual(result.rounds, [liveRow])
+  assert.deepEqual(client.rows('rounds'), [liveRow])
+  assert.equal(client.calls.some((call) => call.operation === 'update'), false)
 })
 
 test('reads every table with stable ordering and page-boundary pagination', async () => {

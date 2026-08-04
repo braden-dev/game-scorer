@@ -284,6 +284,38 @@ test('round deletion asks for confirmation and explains the brief Undo window', 
   assert.deepEqual(globalThis.__scorebookTestSync.mutations, [])
 })
 
+test('initial migration stamps local history newer than a stale incremental cursor', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/' }
+  globalThis.localStorage.setItem('gamescorer.cloud.v1', JSON.stringify({
+    lastSyncAt: '2026-08-04T00:00:00.000Z',
+    outbox: [],
+  }))
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  const migrationPanel = findElement(appTree, (element) => element.type?.name === 'MigrationPanel')
+  assert.ok(migrationPanel)
+
+  await migrationPanel.props.onPublish()
+
+  const mutation = globalThis.__scorebookTestSync.mutations[0]
+  assert.equal(mutation.initialMigration, true)
+  const rowVersions = [
+    ...mutation.payload.rows.people,
+    ...mutation.payload.rows.games,
+    ...mutation.payload.rows.gamePlayers,
+    ...mutation.payload.rows.rounds,
+  ].map((row) => row.updated_at)
+  assert.ok(rowVersions.length > 0)
+  assert.equal(new Set(rowVersions).size, 1)
+  assert.ok(Date.parse(rowVersions[0]) > Date.parse('2026-08-04T00:00:00.000Z'))
+  assert.equal(mutation.payload.rows.games[0].created_at, '1970-01-01T00:00:00.100Z')
+})
+
 test('editing a synced round advances only that round in the queued mutation', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()

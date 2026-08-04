@@ -8,6 +8,7 @@ export const Fragment = Symbol.for('fragment')
 export function jsx(type, props, key) { return { type, props: { ...(props ?? {}), key } } }
 export const jsxs = jsx
 export function useState(initial) { return [typeof initial === 'function' ? initial() : initial, () => {}] }
+export function useEffect() {}
 export function useMemo(factory) { return factory() }
 `
 
@@ -52,6 +53,31 @@ async function loadMigrationPanel() {
   }
   const result = await esbuild.build({
     entryPoints: ['src/components/MigrationPanel.jsx'],
+    bundle: true,
+    format: 'esm',
+    jsx: 'automatic',
+    platform: 'node',
+    plugins: [plugin],
+    write: false,
+  })
+  return (await import(`data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`)).default
+}
+
+async function loadGameView() {
+  const plugin = {
+    name: 'scorebook-game-view-test-aliases',
+    setup(build) {
+      build.onResolve({ filter: /^react$/ }, () => ({ path: 'react', namespace: 'scorebook-test' }))
+      build.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: 'react/jsx-runtime', namespace: 'scorebook-test' }))
+      build.onResolve({ filter: /^\.\.\/lib\/useWakeLock\.js$/ }, () => ({ path: 'wakeLock', namespace: 'scorebook-test' }))
+      build.onLoad({ filter: /.*/, namespace: 'scorebook-test' }, ({ path }) => ({
+        contents: path === 'wakeLock' ? 'export function useWakeLock() {}' : fakeReact,
+        loader: 'js',
+      }))
+    },
+  }
+  const result = await esbuild.build({
+    entryPoints: ['src/components/GameView.jsx'],
     bundle: true,
     format: 'esm',
     jsx: 'automatic',
@@ -136,4 +162,29 @@ test('MigrationPanel reports skipped unsupported games before publish', async ()
   const notice = findElement(tree, (element) => element.props?.role === 'status')
   assert.ok(notice)
   assert.match(textOf(notice), /Skipping\s+1\s+unsupported\s+game/)
+})
+
+test('GameView safely renders malformed remote settings with defaults', async () => {
+  const GameView = await loadGameView()
+  const baseGame = {
+    id: 'g_malformed_settings',
+    gameId: 'farkle',
+    players: [{ id: 'p_one', name: 'One' }, { id: 'p_two', name: 'Two' }],
+    rounds: [],
+    finishedAt: null,
+  }
+
+  for (const target of ['not-a-number', {}, null, Number.NaN]) {
+    assert.doesNotThrow(() => {
+      const tree = GameView({
+        game: { ...baseGame, settings: { target } },
+        roster: baseGame.players,
+        onUpdate: () => {},
+        onBack: () => {},
+        onRematch: () => {},
+        onAddToRoster: () => baseGame.players[0],
+      })
+      assert.match(textOf(tree), /first to 10,000/)
+    }, `target=${String(target)}`)
+  }
 })

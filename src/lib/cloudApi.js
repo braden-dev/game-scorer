@@ -64,13 +64,18 @@ function sameCanonicalPayload(existing, attempted) {
 }
 
 function restorePayload(row) {
-  const payload = canonicalPayload(row)
-  delete payload.deleted_at
+  const payload = Object.fromEntries(Reflect.ownKeys(row ?? {})
+    .filter((key) => typeof key === 'string' && !['updated_at', 'updatedAt', 'deleted_at', 'deletedAt'].includes(key))
+    .sort()
+    .map((key) => [key, row[key] ?? null]))
   return payload
 }
 
 function sameRestorePayload(existing, attempted) {
-  return samePayload(restorePayload(existing), restorePayload(attempted))
+  const requested = restorePayload(attempted)
+  const canonical = Object.fromEntries(Object.keys(requested)
+    .map((key) => [key, existing?.[key] ?? null]))
+  return samePayload(canonical, requested)
 }
 
 function rowValue(row, column) {

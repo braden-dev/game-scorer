@@ -1,8 +1,8 @@
 # Game Scorer
 
-A local-first score keeper for **Farkle**, **Dutch Blitz**, and **3-13**. No accounts, no
-backend — every game is saved to your browser's localStorage and survives refreshes. It's an
-installable PWA, so it runs offline from your phone's home screen.
+A cloud-first score keeper for **Farkle**, **Dutch Blitz**, and **3-13**. The shared scorebook is
+public and editable; the app also keeps a local cache so it remains useful offline and survives
+refreshes as an installable PWA.
 
 ## Running it
 
@@ -11,8 +11,41 @@ npm install
 npm run dev
 ```
 
-Then open http://localhost:5173. Note that the service worker is only generated for real
-builds — use `npm run build && npm run preview` to exercise offline behaviour.
+For cloud sync, create an uncommitted `.env.local` with the public project settings:
+
+```bash
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_…
+```
+
+Then open http://localhost:5173. Without these variables the app stays local-only. The service
+worker is only generated for real builds — use `npm run build && npm run preview` to exercise
+offline behaviour.
+
+## Cloud sync and migration
+
+With cloud settings present, the app loads the shared snapshot into a local cache. Edits apply
+immediately to the cache and enter an outbox; the sync loop retries them, uses updated-at
+compare-and-set checks, and refreshes the shared version when another device wins. JSON export
+remains the long-term backup. Shared scorebook rows are intentionally public and editable by
+anyone using the configured publishable key.
+
+The first cloud-enabled visit offers to publish existing local history. Before applying the
+database migration, validate it locally or against the linked project:
+
+```bash
+npm run validate:migration
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db lint --linked
+npx supabase db push --linked
+```
+
+Run `db push` only after lint succeeds. The validation command is rollback-only when it uses a
+local Postgres database and never deploys anything.
+
+Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` belong in the frontend or GitHub
+Pages build variables. Never put a service-role key, database password, or other privileged
+Supabase credential in frontend code or `VITE_*` variables.
 
 ## Installing on your phone
 

@@ -440,6 +440,70 @@ test('restores a round after a server-triggered delete with the canonical tombst
   }
 })
 
+test('offline delete followed by Undo is idempotent while the remote row is still live', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const existingAt = '2026-08-04T00:00:00.000Z'
+  const deleteAt = '2026-08-04T00:00:10.000Z'
+  const restoreAt = '2026-08-04T00:00:20.000Z'
+  const initialRows = {
+    people: [{ id: 'p_offline', name: 'Offline', updated_at: existingAt, deleted_at: null }],
+    games: [{ id: 'g_offline', game_id: 'farkle', updated_at: existingAt, finished_at: null, settings: {}, deleted_at: null }],
+    game_players: [],
+    rounds: [{
+      id: 'r_offline', game_id: 'g_offline', round_index: 0,
+      entries: { p_offline: { score: 42 } }, updated_at: existingAt, deleted_at: null,
+    }],
+  }
+  const client = mutableCloudClient(initialRows)
+  const api = createCloudApi(client)
+  const state = fromRemoteRows(initialRows, 'g_offline')
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync(state, () => {}, { configured: true, api })
+    return null
+  }
+
+  globalThis.navigator.onLine = false
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_offline_delete', entity: 'rounds', entityId: 'r_offline',
+        operation: 'softDelete', updatedAt: deleteAt,
+        payload: { gameId: 'g_offline', roundIndex: 0, entries: { p_offline: { score: 42 } } },
+      })
+      observed.hook.cancelSyncMutations((mutation) => mutation.id === 'm_offline_delete')
+      observed.hook.enqueueStateMutation({
+        id: 'm_offline_restore', entity: 'scorebook', operation: 'restore',
+        payload: {
+          rows: {
+            people: [], games: [], gamePlayers: [],
+            rounds: [{
+              ...initialRows.rounds[0], updated_at: restoreAt, deleted_at: null,
+            }],
+          },
+        },
+        restore: {
+          rounds: [{ id: 'r_offline', game_id: 'g_offline', updated_at: deleteAt, deleted_at: deleteAt }],
+        },
+      })
+    })
+
+    globalThis.navigator.onLine = true
+    await act(async () => { await observed.hook.syncNow() })
+
+    assert.equal(observed.hook.error, null)
+    assert.equal(observed.hook.pendingCount, 0)
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+    assert.deepEqual(client.rows('rounds'), initialRows.rounds)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('surfaces a conflict when a deleted round changes before Undo restore', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

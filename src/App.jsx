@@ -5,7 +5,7 @@ import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.j
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { clone, loadSyncStore } from './lib/sync.js'
-import { findCloudTombstone, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
+import { findCloudTombstone, stampMigrationRows, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
@@ -62,6 +62,14 @@ function revivedGame(game, deletedAt) {
   const revived = snapshot(game)
   revived.updatedAt = updatedAt
   return revived
+}
+
+function migrationVersion(lastSyncAt) {
+  const lastSyncMilliseconds = Date.parse(lastSyncAt ?? '')
+  return new Date(Math.max(
+    Date.now(),
+    Number.isFinite(lastSyncMilliseconds) ? lastSyncMilliseconds + 1 : 0,
+  )).toISOString()
 }
 
 function restoreExpectedTombstone(entity, id, parentId, fallbackAt) {
@@ -522,8 +530,10 @@ export default function App() {
   }
 
   const publishMigration = async () => {
-    const existingMigration = loadSyncStore().outbox.find((mutation) => mutation.initialMigration)
+    const migrationStore = loadSyncStore()
+    const existingMigration = migrationStore.outbox.find((mutation) => mutation.initialMigration)
     const migrationId = existingMigration?.id ?? uid('migration')
+    const syncVersion = migrationVersion(migrationStore.lastSyncAt)
     if (!existingMigration) {
       applyMutation(
         (prev) => prev,
@@ -532,7 +542,7 @@ export default function App() {
           entity: 'scorebook',
           operation: 'upsert',
           initialMigration: true,
-          payload: { rows: toRemoteRows(nextState) },
+          payload: { rows: stampMigrationRows(toRemoteRows(nextState), syncVersion) },
         }),
       )
     } else {
@@ -541,7 +551,10 @@ export default function App() {
         lastError: null,
         outbox: store.outbox.map((mutation) => {
           if (mutation.id !== migrationId) return mutation
-          const refreshed = { ...mutation, payload: { rows: toRemoteRows(stateRef.current) } }
+          const refreshed = {
+            ...mutation,
+            payload: { rows: stampMigrationRows(toRemoteRows(stateRef.current), syncVersion) },
+          }
           delete refreshed.status
           delete refreshed.error
           delete refreshed.conflictedAt
