@@ -275,7 +275,7 @@ test('reads every table with stable ordering and page-boundary pagination', asyn
 })
 
 test('softDelete updates timestamps for a composite game player key', async () => {
-  const client = fakeClient({ game_players: [{
+  const client = mutableClient({ game_players: [{
     game_id: 'g_one', person_id: 'p_one', seat_order: 2, name_snapshot: 'Original',
     updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
   }] })
@@ -285,8 +285,9 @@ test('softDelete updates timestamps for a composite game player key', async () =
 
   assert.deepEqual(result, {
     game_id: 'g_one', person_id: 'p_one', seat_order: 2, name_snapshot: 'Original',
-    updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
+    updated_at: updatedAt, deleted_at: updatedAt,
   })
+  assert.deepEqual(client.rows('game_players'), [result])
   assert.deepEqual(client.calls.filter((call) => call.operation === 'update'), [{
     table: 'game_players',
     operation: 'update',
