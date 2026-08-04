@@ -67,7 +67,7 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
   return client
 }
 
-function mutableClient(initialRows = {}) {
+function mutableClient(initialRows = {}, hooks = {}) {
   const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
   const calls = []
   const keyFor = (table, row) => table === 'game_players'
@@ -105,12 +105,13 @@ function mutableClient(initialRows = {}) {
         },
         is(column, value) {
           calls.push({ table, operation: 'is', column, value })
-          filters.push((row) => row[column] === value)
+          filters.push((row) => (row[column] ?? null) === value)
           return query
         },
         upsert(rows, options) {
           action = 'upsert'
           payload = rows
+          query.upsertOptions = options
           calls.push({ table, operation: 'upsert', payload: rows, options })
           return query
         },
@@ -137,11 +138,15 @@ function mutableClient(initialRows = {}) {
               tableRows.push(...payload.map((row) => ({ ...row })))
               data = payload
             } else if (action === 'upsert') {
-              data = payload.map((nextRow) => {
+              hooks.beforeUpsert?.(table, payload, tableRows)
+              data = payload.flatMap((nextRow) => {
                 const existing = tableRows.find((row) => keyFor(table, row) === keyFor(table, nextRow))
-                if (existing) Object.assign(existing, nextRow)
-                else tableRows.push({ ...nextRow })
-                return nextRow
+                if (existing) {
+                  if (!query.upsertOptions?.ignoreDuplicates) Object.assign(existing, nextRow)
+                  return query.upsertOptions?.ignoreDuplicates ? [] : [nextRow]
+                }
+                tableRows.push({ ...nextRow })
+                return [nextRow]
               })
             }
             return Promise.resolve({ data, error: null }).then(resolve, reject)
@@ -178,8 +183,8 @@ test('fetchSnapshot returns all four tables, including tombstones', async () => 
   ])
 })
 
-test('upsertRows writes rows in foreign-key order with primary keys', async () => {
-  const client = fakeClient({ game_players: [{ game_id: 'g_one', person_id: 'p_one' }] })
+test('upsertRows supplies conflict keys while retaining version-aware updates', async () => {
+  const client = mutableClient({ game_players: [{ game_id: 'g_one', person_id: 'p_one' }] })
   const rows = {
     people: [{ id: 'p_one', name: 'One', updated_at: '2026-01-01T00:00:00Z' }],
     games: [{ id: 'g_one', game_id: 'farkle', updated_at: '2026-01-01T00:00:00Z' }],
@@ -189,15 +194,16 @@ test('upsertRows writes rows in foreign-key order with primary keys', async () =
 
   await createCloudApi(client).upsertRows(rows)
 
-  assert.deepEqual(client.calls.filter((call) => ['insert', 'update'].includes(call.operation)).map((call) => [
-    call.table, call.operation, call.payload,
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'upsert').map((call) => [
+    call.table, call.options?.onConflict, call.options?.ignoreDuplicates,
   ]), [
-    ['people', 'insert', rows.people],
-    ['games', 'insert', rows.games],
-    ['game_players', 'update', rows.gamePlayers[0]],
-    ['rounds', 'insert', rows.rounds],
+    ['people', 'id', true],
+    ['games', 'id', true],
+    ['game_players', 'game_id,person_id', true],
+    ['rounds', 'id', true],
   ])
   assert.deepEqual(client.calls.filter((call) => call.operation === 'eq' && call.table === 'game_players').map((call) => [call.column, call.value]), [
+    ['game_id', 'g_one'], ['person_id', 'p_one'],
     ['game_id', 'g_one'], ['person_id', 'p_one'],
     ['game_id', 'g_one'], ['person_id', 'p_one'],
   ])
@@ -352,7 +358,50 @@ test('inserts new upsert rows when no remote row exists', async () => {
   await createCloudApi(client).upsertRows({ people: [{ id: 'p_new', name: 'New', updated_at: '2026-01-01T00:00:00.000Z' }] })
 
   assert.deepEqual(client.rows('people'), [{ id: 'p_new', name: 'New', updated_at: '2026-01-01T00:00:00.000Z' }])
-  assert.equal(client.calls.some((call) => call.operation === 'insert'), true)
+  assert.deepEqual(client.calls.find((call) => call.operation === 'upsert'), {
+    table: 'people', operation: 'upsert',
+    payload: [{ id: 'p_new', name: 'New', updated_at: '2026-01-01T00:00:00.000Z' }],
+    options: { onConflict: 'id', ignoreDuplicates: true },
+  })
+})
+
+test('handles a concurrent create with ignore-duplicates and conditional reconciliation', async () => {
+  const client = mutableClient({}, {
+    beforeUpsert(table, payload, tableRows) {
+      if (table === 'people' && payload[0]?.id === 'p_race') {
+        tableRows.push({ id: 'p_race', name: 'Remote winner', updated_at: '2026-01-02T00:00:00.000Z' })
+      }
+    },
+  })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({ people: [{ id: 'p_race', name: 'Stale local', updated_at: '2026-01-01T00:00:00.000Z' }] }),
+    /people.*newer remote row/,
+  )
+  assert.deepEqual(client.rows('people'), [{ id: 'p_race', name: 'Remote winner', updated_at: '2026-01-02T00:00:00.000Z' }])
+  assert.deepEqual(client.calls.find((call) => call.operation === 'upsert'), {
+    table: 'people', operation: 'upsert',
+    payload: [{ id: 'p_race', name: 'Stale local', updated_at: '2026-01-01T00:00:00.000Z' }],
+    options: { onConflict: 'id', ignoreDuplicates: true },
+  })
+})
+
+test('conditionally reconciles a concurrent older create with the local newer row', async () => {
+  const client = mutableClient({}, {
+    beforeUpsert(table, payload, tableRows) {
+      if (table === 'people' && payload[0]?.id === 'p_older_race') {
+        tableRows.push({ id: 'p_older_race', name: 'Older remote', updated_at: '2026-01-01T00:00:00.000Z' })
+      }
+    },
+  })
+
+  await createCloudApi(client).upsertRows({ people: [{
+    id: 'p_older_race', name: 'New local', updated_at: '2026-01-02T00:00:00.000Z',
+  }] })
+
+  assert.deepEqual(client.rows('people'), [{
+    id: 'p_older_race', name: 'New local', updated_at: '2026-01-02T00:00:00.000Z',
+  }])
 })
 
 test('Supabase errors name the table and provider message', async () => {

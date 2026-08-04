@@ -211,7 +211,7 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt) {
       if (matched.length) records.push({ ...tombstone, gameId: game.id, id: requestedId })
       return matched.length ? { ...game, rounds: rounds.filter((round) => round.id !== requestedId) } : game
     })
-    if (requestedGameId != null && records.length === 0) records.push({ ...tombstone, gameId: requestedGameId, id: requestedId })
+    if (records.length === 0) records.push({ ...tombstone, gameId: requestedGameId ?? null, id: requestedId })
     for (const record of records) nextMetadata[group] = addCloudTombstone(nextMetadata, group, record)
   }
 

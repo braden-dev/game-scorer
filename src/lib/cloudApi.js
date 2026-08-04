@@ -96,14 +96,6 @@ async function checkedWrite(query, table, action) {
   return data
 }
 
-async function insertRow(client, definition, row) {
-  await checkedWrite(
-    client.from(definition.table).insert([row]).select(selectedKeys(definition)),
-    definition.table,
-    'insert',
-  )
-}
-
 async function compareAndSetRow(client, definition, row, existing) {
   if (rowVersion(existing) > rowVersion(row)) throw conflictError(definition.table)
 
@@ -113,6 +105,19 @@ async function compareAndSetRow(client, definition, row, existing) {
     ? query.is('updated_at', null)
     : query.eq('updated_at', expectedUpdatedAt)
   await checkedWrite(query.select(selectedKeys(definition)), definition.table, 'update')
+}
+
+async function upsertWithoutOverwriting(client, definition, row) {
+  await checked(
+    client.from(definition.table).upsert([row], {
+      onConflict: definition.conflict,
+      ignoreDuplicates: true,
+    }),
+    definition.table,
+  )
+  const existing = await findExisting(client, definition, row)
+  if (!existing) throw conflictError(definition.table)
+  await compareAndSetRow(client, definition, row, existing)
 }
 
 function entityDefinition(entity) {
@@ -140,8 +145,8 @@ export function createCloudApi(client) {
         const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
         for (const row of payload) {
           const existing = await findExisting(client, definition, row)
-          if (existing) await compareAndSetRow(client, definition, row, existing)
-          else await insertRow(client, definition, row)
+          if (existing && rowVersion(existing) > rowVersion(row)) throw conflictError(definition.table)
+          await upsertWithoutOverwriting(client, definition, row)
         }
       }
     },

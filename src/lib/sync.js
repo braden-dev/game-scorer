@@ -156,7 +156,9 @@ function metadataRecords(metadata, key) {
 }
 
 function childMetadata(metadata, key, gameId) {
-  return metadataRecords(metadata, key).filter((record) => record.gameId === gameId)
+  return metadataRecords(metadata, key).filter((record) => (
+    record.gameId === gameId || (key === 'rounds' && record.gameId == null)
+  ))
 }
 
 function metadataOrder(record, camelName, snakeName) {

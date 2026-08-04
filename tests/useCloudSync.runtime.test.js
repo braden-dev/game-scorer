@@ -288,6 +288,70 @@ test('schedules one follow-up replay for a mutation added during replay', async 
   }
 })
 
+test('keeps a scalar round tombstone after local removal and successful replay', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const gate = deferred()
+  const updates = []
+  const api = {
+    fetchSnapshot: async () => gate.promise,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const dependencies = { configured: true, api }
+  const observed = { value: null }
+  const setState = (nextState) => { updates.push(nextState) }
+  function Harness({ state }) {
+    observed.value = useCloudSync(state, setState, dependencies)
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness, {
+      state: {
+        activeGameId: 'g_round', roster: [], games: [{
+          id: 'g_round', gameId: 'farkle', players: [], settings: {},
+          rounds: [{ id: 'r_removed', roundIndex: 0, entries: { p_one: { score: 1 } } }],
+        }],
+      },
+    })) })
+    await act(async () => { root.render(React.createElement(Harness, {
+      state: {
+        activeGameId: 'g_round', roster: [], games: [{
+          id: 'g_round', gameId: 'farkle', players: [], settings: {}, rounds: [],
+        }],
+      },
+    })) })
+    await act(async () => {
+      observed.value.enqueueStateMutation({
+        id: 'm_round_delete', entity: 'rounds', entityId: 'r_removed', operation: 'softDelete',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      })
+    })
+
+    gate.resolve({
+      people: [],
+      games: [{ id: 'g_round', game_id: 'farkle', updated_at: '2026-01-01T00:00:00.000Z', settings: {} }],
+      gamePlayers: [],
+      rounds: [{
+        id: 'r_removed', game_id: 'g_round', round_index: 0, entries: { p_one: { score: 1 } },
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+    })
+    await act(async () => { await gate.promise; await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    assert.deepEqual(updates.at(-1).games[0].rounds, [])
+    const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.equal(stored.cache.__cloudMetadata.rounds[0].id, 'r_removed')
+    assert.equal(stored.cache.__cloudMetadata.rounds[0].gameId, null)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('mounts the hook safely in local mode when cloud is not configured', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
