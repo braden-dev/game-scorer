@@ -401,7 +401,7 @@ test('restore is idempotent when an offline delete never reached the live remote
   }
   const client = mutableClient({ rounds: [liveRow] })
   const result = await createCloudApi(client).restoreRows(
-    { rounds: [{ ...liveRow, updated_at: '2026-08-04T00:00:20.000Z' }] },
+    { rounds: [{ ...liveRow, updated_at: '2026-08-03T00:00:20.000Z' }] },
     { rounds: [{ id: liveRow.id, game_id: liveRow.game_id, updated_at: '2026-08-04T00:00:10.000Z', deleted_at: '2026-08-04T00:00:10.000Z' }] },
   )
 
@@ -747,6 +747,36 @@ test('restores a matching tombstone with its server version despite a newer trig
     { table: 'rounds', operation: 'eq', column: 'deleted_at', value: deletedAt },
     { table: 'rounds', operation: 'eq', column: 'updated_at', value: serverAt },
   ])
+})
+
+test('rejects restore rows that do not advance the canonical tombstone version', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const baseRow = {
+    id: 'r_restore_version', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+    updated_at: serverAt, deleted_at: null,
+  }
+  const expected = { rounds: [{ id: 'r_restore_version', updated_at: serverAt, deleted_at: deletedAt }] }
+
+  for (const updatedAt of [serverAt, '2026-01-02T00:00:00.999Z']) {
+    const client = mutableClient({ rounds: [{
+      ...baseRow, updated_at: serverAt, deleted_at: deletedAt,
+    }] })
+    await assert.rejects(
+      createCloudApi(client).restoreRows({ rounds: [{ ...baseRow, updated_at: updatedAt }] }, expected),
+      /rounds.*newer remote row/,
+    )
+  }
+
+  const nonFiniteClient = mutableClient({ rounds: [{
+    ...baseRow, updated_at: serverAt, deleted_at: deletedAt,
+  }] })
+  await assert.rejects(
+    createCloudApi(nonFiniteClient).restoreRows({ rounds: [{
+      ...baseRow, updated_at: null, deleted_at: null,
+    }] }, expected),
+    /rounds.*newer remote row/,
+  )
 })
 
 test('compares restore tombstone timestamps semantically while retaining conflicts for different values', async () => {

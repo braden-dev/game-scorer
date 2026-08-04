@@ -66,6 +66,21 @@ const fakeSync = `
 import { useEffect } from 'react'
 const STORE_KEY = 'gamescorer.cloud.v1'
 const state = globalThis.__scorebookIntegrationSync ??= { outbox: [], status: 'synced', lastError: null }
+function entityKey(entity, entityId, details) {
+  const group = entity === 'game_players' ? 'gamePlayers' : entity
+  if (group === 'gamePlayers') {
+    const gameId = typeof entityId === 'object' ? entityId.gameId ?? entityId.game_id : details?.gameId
+    const personId = typeof entityId === 'object' ? entityId.personId ?? entityId.person_id : entityId
+    return group + ':' + gameId + ':' + personId
+  }
+  if (group === 'rounds') return group + ':' + (details?.gameId ?? details?.game_id) + ':' + entityId
+  return group + ':' + (typeof entityId === 'object' ? entityId.id : entityId)
+}
+function rowKey(group, row) {
+  if (group === 'gamePlayers') return entityKey(group, { gameId: row.game_id, personId: row.person_id })
+  if (group === 'rounds') return entityKey(group, row.id, { gameId: row.game_id })
+  return entityKey(group, row.id)
+}
 function readStore() {
   return JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}')
 }
@@ -87,6 +102,7 @@ const api = globalThis.__scorebookIntegrationCloudApi ??= {
   deleteGate: null,
   preserveExplicitUpdatedAt: false,
   serverUpdatedAt: null,
+  serverTombstones: new Map(),
   async fetchSnapshot() {
     if (this.failFetch) throw new Error('snapshot unavailable')
     return { people: [], games: [], gamePlayers: [], rounds: [] }
@@ -95,12 +111,13 @@ const api = globalThis.__scorebookIntegrationCloudApi ??= {
     if (this.failUpsert) throw new Error('migration upload unavailable')
     this.mutations.push({ rows, initialMigration: mutation.initialMigration })
   },
-  async softDelete(entity, entityId, updatedAt) {
+  async softDelete(entity, entityId, updatedAt, details) {
     this.softDeletes.push({ entity, entityId, updatedAt })
     if (this.deleteGate) await this.deleteGate
     this.serverUpdatedAt = this.preserveExplicitUpdatedAt
       ? new Date(updatedAt).toISOString()
       : '2026-08-04T00:00:10.000Z'
+    this.serverTombstones.set(entityKey(entity, entityId, details), this.serverUpdatedAt)
     return {
       id: typeof entityId === 'object' ? entityId.id : entityId,
       updated_at: this.serverUpdatedAt,
@@ -109,9 +126,19 @@ const api = globalThis.__scorebookIntegrationCloudApi ??= {
   },
   async restoreRows(rows, expectedTombstones) {
     this.restoreCalls.push({ rows, expectedTombstones })
-    const expected = expectedTombstones?.games?.[0]
-    if (this.serverUpdatedAt && expected?.updated_at !== this.serverUpdatedAt) {
-      throw new Error('restore conflict: tombstone version changed')
+    for (const [group, expectedRows] of Object.entries(expectedTombstones ?? {})) {
+      for (const expected of expectedRows) {
+        const key = rowKey(group, expected)
+        const serverUpdatedAt = this.serverTombstones.get(key)
+        if (!serverUpdatedAt) continue
+        if (expected.updated_at !== serverUpdatedAt) {
+          throw new Error('restore conflict: tombstone version changed')
+        }
+        const requested = (rows[group] ?? []).find((row) => rowKey(group, row) === key)
+        if (!requested || Date.parse(requested.updated_at) <= Date.parse(serverUpdatedAt)) {
+          throw new Error('restore conflict: restore version did not advance')
+        }
+      }
     }
     return rows
   },
@@ -151,7 +178,7 @@ export function useCloudSync() {
     }
     try {
       if (mutation.operation === 'softDelete') {
-        await api.softDelete(mutation.entity, mutation.entityId, mutation.updatedAt)
+        await api.softDelete(mutation.entity, mutation.entityId, mutation.updatedAt, mutation.payload)
       } else if (mutation.operation === 'restore') {
         await api.restoreRows(mutation.payload.rows, mutation.restore)
       } else {
@@ -326,6 +353,7 @@ test('restores an in-flight game Undo after the serialized delete returns', asyn
   globalThis.__scorebookIntegrationCloudApi.softDeletes = []
   globalThis.__scorebookIntegrationCloudApi.restoreCalls = []
   globalThis.__scorebookIntegrationCloudApi.serverUpdatedAt = null
+  globalThis.__scorebookIntegrationCloudApi.serverTombstones = new Map()
   // The follow-up SQL migration is installed: explicit application versions
   // survive the soft-delete trigger instead of being replaced by now().
   globalThis.__scorebookIntegrationCloudApi.preserveExplicitUpdatedAt = true
@@ -360,6 +388,91 @@ test('restores an in-flight game Undo after the serialized delete returns', asyn
   )
   assert.equal(store.outbox.length, 0)
   assert.equal(store.lastError, null)
+})
+
+test('restores in-flight round and player Undos with canonical tombstone versions', async () => {
+  const scenarios = [
+    {
+      kind: 'round',
+      id: 'g_inflight_round',
+      tombstoneGroup: 'rounds',
+      buildNextGame(game) { return { ...game, rounds: [] } },
+    },
+    {
+      kind: 'player',
+      id: 'g_inflight_player',
+      tombstoneGroup: 'gamePlayers',
+      buildNextGame(game) { return { ...game, players: [game.players[1]] } },
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    const App = await loadAppForIntegrationTest()
+    const game = {
+      id: scenario.id,
+      gameId: 'farkle',
+      createdAt: 1,
+      updatedAt: 2,
+      players: [{ id: 'p_one', name: 'One' }, { id: 'p_two', name: 'Two' }],
+      settings: {},
+      rounds: [{ id: `r_${scenario.kind}`, entries: { p_one: { score: 1 }, p_two: { score: 2 } } }],
+      finishedAt: null,
+    }
+    const storage = new MemoryStorage()
+    saveState({ activeGameId: scenario.id, roster: game.players, games: [game] }, storage)
+    storage.setItem('gamescorer.cloud.v1', JSON.stringify({ initialMigrationCompleted: true, outbox: [] }))
+    globalThis.localStorage = storage
+    globalThis.window = {
+      location: { pathname: `/games/${scenario.id}` },
+      matchMedia: () => ({ matches: false }),
+      navigator: { onLine: true, standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+      confirm: () => true,
+      addEventListener() {},
+      removeEventListener() {},
+    }
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: globalThis.window.navigator })
+    globalThis.__scorebookIntegrationReactControl.reset()
+    globalThis.__scorebookIntegrationSync.outbox = []
+    globalThis.__scorebookIntegrationSync.status = 'synced'
+    globalThis.__scorebookIntegrationSync.lastError = null
+    globalThis.__scorebookIntegrationCloudApi.softDeletes = []
+    globalThis.__scorebookIntegrationCloudApi.restoreCalls = []
+    globalThis.__scorebookIntegrationCloudApi.serverUpdatedAt = null
+    globalThis.__scorebookIntegrationCloudApi.serverTombstones = new Map()
+    globalThis.__scorebookIntegrationCloudApi.preserveExplicitUpdatedAt = true
+    let releaseDelete
+    globalThis.__scorebookIntegrationCloudApi.deleteGate = new Promise((resolve) => { releaseDelete = resolve })
+
+    globalThis.__scorebookIntegrationReactControl.begin()
+    const initial = App()
+    await globalThis.__scorebookIntegrationReactControl.flushEffects()
+    initial.props.content.props.onUpdate(scenario.buildNextGame(game))
+
+    const deleteSync = globalThis.__scorebookIntegrationSync.syncNow()
+    globalThis.__scorebookIntegrationReactControl.begin()
+    const afterDelete = App()
+    const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+    findElement(toast, (element) => element.type === 'button' && element.props.children === 'Undo').props.onClick()
+
+    releaseDelete()
+    await deleteSync
+    await globalThis.__scorebookIntegrationSync.syncNow()
+    await globalThis.__scorebookIntegrationSync.syncNow()
+
+    const restoreCall = globalThis.__scorebookIntegrationCloudApi.restoreCalls.at(-1)
+    const expected = restoreCall.expectedTombstones[scenario.tombstoneGroup][0]
+    const requested = restoreCall.rows[scenario.tombstoneGroup].find((row) => (
+      scenario.tombstoneGroup === 'gamePlayers'
+        ? row.game_id === expected.game_id && row.person_id === expected.person_id
+        : row.game_id === expected.game_id && row.id === expected.id
+    ))
+    assert.ok(requested)
+    assert.equal(expected.updated_at, globalThis.__scorebookIntegrationCloudApi.serverUpdatedAt)
+    assert.ok(Date.parse(requested.updated_at) > Date.parse(expected.updated_at))
+    const store = loadSyncStore()
+    assert.equal(store.outbox.length, 0)
+    assert.equal(store.lastError, null)
+  }
 })
 
 test('aborts initial migration when the cloud snapshot fails, then retries without remounting', async () => {

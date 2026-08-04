@@ -236,6 +236,9 @@ async function restoreRow(client, definition, row, expectedTombstone) {
     if (sameRestorePayload(existing, row)) return existing
     throw conflictError(definition.table)
   }
+  if (!Number.isFinite(requestedVersion) || requestedVersion <= existingVersion) {
+    throw conflictError(definition.table)
+  }
 
   const existingUpdatedAt = canonicalTimestamp(existing.updated_at)
   const expectedDeletedAt = canonicalTimestamp(rowValue(expectedTombstone, 'deleted_at'))

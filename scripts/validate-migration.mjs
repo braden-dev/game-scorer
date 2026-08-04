@@ -74,6 +74,29 @@ ${migrationSql}
 insert into public.games (id, game_id, settings)
 values ('${escapeSqlLiteral(gameId)}', 'farkle', '{}'::jsonb);
 
+-- Verify explicit application timestamps survive while ordinary updates advance them.
+do $$
+declare
+  explicit_application_timestamp timestamptz := '2000-01-01T00:00:00.000Z';
+  observed_updated_at timestamptz;
+begin
+  update public.games
+  set updated_at = explicit_application_timestamp
+  where id = '${escapeSqlLiteral(gameId)}';
+  select updated_at into observed_updated_at from public.games where id = '${escapeSqlLiteral(gameId)}';
+  if observed_updated_at <> explicit_application_timestamp then
+    raise exception 'explicit application timestamp was not preserved';
+  end if;
+
+  update public.games
+  set settings = settings
+  where id = '${escapeSqlLiteral(gameId)}';
+  select updated_at into observed_updated_at from public.games where id = '${escapeSqlLiteral(gameId)}';
+  if observed_updated_at <= explicit_application_timestamp then
+    raise exception 'ordinary update did not advance updated_at';
+  end if;
+end $$;
+
 -- A deleted tombstone may retain an index now reused by a shifted live row.
 insert into public.rounds (id, game_id, round_index, entries, deleted_at)
 values ('${escapeSqlLiteral(tombstoneRoundId)}', '${escapeSqlLiteral(gameId)}', 0, '{}'::jsonb, now());

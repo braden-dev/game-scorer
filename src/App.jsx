@@ -56,11 +56,16 @@ function comparableGameMetadata(value) {
   return JSON.stringify(copy)
 }
 
-function revivedGame(game, deletedAt) {
-  const updatedAt = Math.max(Date.now(), (Number(deletedAt) || 0) + 1)
+function revivedGame(game, updatedAt) {
   const revived = snapshot(game)
   revived.updatedAt = updatedAt
   return revived
+}
+
+function timestampMilliseconds(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+  const milliseconds = new Date(value).getTime()
+  return Number.isFinite(milliseconds) ? milliseconds : 0
 }
 
 function migrationVersion(lastSyncAt) {
@@ -197,6 +202,11 @@ export default function App() {
       : action.kind === 'player'
         ? restoreExpectedTombstone('game_players', action.player.id, action.gameId, action.deletedAt)
         : restoreExpectedTombstone('games', action.game.id, null, action.deletedAt)
+    const restoreVersion = Math.max(
+      Date.now(),
+      timestampMilliseconds(action.deletedAt) + 1,
+      timestampMilliseconds(restoreExpected.updated_at) + 1,
+    )
     const restoreMutation = (nextState, previousState, options, entity) => ({
       ...stateChangeMutation(nextState, previousState, options),
       operation: 'restore',
@@ -229,7 +239,7 @@ export default function App() {
       if (action.kind === 'game') {
         if (previous.games.some((game) => game.id === action.game.id)) return previous
         const games = previous.games.slice()
-        games.splice(Math.min(action.gameIndex, games.length), 0, revivedGame(action.game, action.deletedAt))
+        games.splice(Math.min(action.gameIndex, games.length), 0, revivedGame(action.game, restoreVersion))
         return {
           ...previous,
           games,
@@ -243,7 +253,7 @@ export default function App() {
       if (!game) return previous
       if (action.kind === 'player') {
         if (game.players.some((player) => player.id === action.player.id)) return previous
-        const restoreAt = Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1)
+        const restoreAt = restoreVersion
         const restoredPlayer = snapshot(action.player)
         restoredPlayer.updatedAt = restoreAt
         const players = game.players.slice()
@@ -262,14 +272,14 @@ export default function App() {
         })
         const metadataChanged = comparableGameMetadata(game) !== comparableGameMetadata(restoredMetadata)
         const updatedGame = metadataChanged
-          ? revivedGame({ ...restoredMetadata, players, rounds }, action.deletedAt)
+          ? revivedGame({ ...restoredMetadata, players, rounds }, restoreVersion)
           : { ...game, players, rounds }
         return { ...previous, games: previous.games.map((candidate) => candidate.id === game.id ? updatedGame : candidate) }
       }
       if (game.rounds.some((round) => round.id === action.round.id)) return previous
       const rounds = game.rounds.slice()
       const restoredRound = snapshot(action.round)
-      restoredRound.updatedAt = Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1)
+      restoredRound.updatedAt = restoreVersion
       rounds.splice(Math.min(action.roundIndex, rounds.length), 0, restoredRound)
       const restoredMetadata = action.gameSnapshot ? snapshot(action.gameSnapshot) : game
       const updatedGame = revivedGame({
@@ -278,7 +288,7 @@ export default function App() {
         // replaced while the deleted round is being restored.
         players: game.players,
         rounds,
-      }, action.deletedAt)
+      }, restoreVersion)
       return { ...previous, games: previous.games.map((candidate) => candidate.id === game.id ? updatedGame : candidate) }
     }, mutationFactory)
   }, [applyMutation, expireUndo, stateChangeMutation, sync])

@@ -13,6 +13,10 @@ const timestampMigrationPath = path.resolve(
   path.dirname(migrationPath),
   '20260804000200_preserve_explicit_updated_at.sql',
 )
+const migrationWorkflowPath = path.resolve(
+  path.dirname(migrationPath),
+  '../../.github/workflows/migration-validation.yml',
+)
 
 function assertLiveRoundPositions(rows) {
   const liveKeys = rows
@@ -68,6 +72,7 @@ test('migration validation command includes linked lint and transactional local 
   assert.match(validationScript, /Run the migration twice in one transaction/)
   assert.match(validationScript, /ROLLBACK;/)
   assert.match(validationScript, /live\/tombstone round-index behavior/)
+  assert.match(validationScript, /explicit application timestamp/)
 })
 
 test('follow-up timestamp migration preserves explicit application versions and is rerun-safe', () => {
@@ -76,4 +81,12 @@ test('follow-up timestamp migration preserves explicit application versions and 
   assert.match(timestampMigration, /if\s+new\.updated_at\s+is\s+null\s+or\s+new\.updated_at\s*=\s+old\.updated_at/i)
   assert.match(timestampMigration, /new\.updated_at\s*=\s+now\(\)/i)
   assert.equal((timestampMigration.match(/create\s+or\s+replace\s+function/gi) ?? []).length, 1)
+})
+
+test('migration validation workflow provisions Postgres and runs executable SQL checks', () => {
+  const workflow = fs.readFileSync(migrationWorkflowPath, 'utf8')
+  assert.match(workflow, /services:\s*[\s\S]*postgres:/i)
+  assert.match(workflow, /MIGRATION_TEST_DATABASE_URL:\s*postgresql:\/\/postgres:postgres@127\.0\.0\.1:54322\/postgres/i)
+  assert.match(workflow, /command\s+-v\s+psql[\s\S]*postgresql-client/i)
+  assert.match(workflow, /npm run validate:migration/)
 })

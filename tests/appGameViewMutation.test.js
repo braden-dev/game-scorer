@@ -618,6 +618,53 @@ test('game deletion can be undone before the ten-second window expires', async (
   assert.equal(restoreMutation.restore.games[0].updated_at, restoreMutation.restore.games[0].deleted_at)
 })
 
+test('game Undo advances the restore version beyond a future canonical tombstone', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const originalNow = Date.now
+  Date.now = () => 1_000
+  try {
+    const state = gameState()
+    state.activeGameId = null
+    const storage = prepareStorage(state)
+    const canonicalTombstone = fromRemoteRows({
+      people: [],
+      games: [{
+        id: 'g_mutations', game_id: 'farkle',
+        updated_at: '1970-01-01T00:00:05.000Z',
+        deleted_at: '1970-01-01T00:00:01.000Z',
+      }],
+      gamePlayers: [],
+      rounds: [],
+    }, null)
+    saveSyncStore({
+      cache: canonicalTombstone,
+      reconciledCache: canonicalTombstone,
+      outbox: [],
+      lastSyncAt: null,
+      lastError: null,
+      initialMigrationCompleted: true,
+    }, storage)
+    resetTestState()
+
+    globalThis.__scorebookTestReact.begin()
+    const initial = App()
+    initial.props.content.props.children[0].props.onDelete('g_mutations')
+
+    globalThis.__scorebookTestReact.begin()
+    const afterDelete = App()
+    const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+    findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo').props.onClick()
+
+    globalThis.__scorebookTestReact.begin()
+    App()
+    const restoreMutation = globalThis.__scorebookTestSync.mutations.find(({ operation }) => operation === 'restore')
+    assert.ok(restoreMutation)
+    assert.equal(restoreMutation.payload.rows.games[0].updated_at, '1970-01-01T00:00:05.001Z')
+  } finally {
+    Date.now = originalNow
+  }
+})
+
 test('game Undo preserves untouched child timestamps in the full-game upsert', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()
