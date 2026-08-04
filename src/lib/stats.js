@@ -79,7 +79,7 @@ function compareFinishedGames(first, second) {
   }
   if (firstCreated === null && secondCreated !== null) return 1
   if (firstCreated !== null && secondCreated === null) return -1
-  return first.originalIndex - second.originalIndex || compareIds(first.game.id || '', second.game.id || '')
+  return compareIds(first.game.id || '', second.game.id || '') || first.originalIndex - second.originalIndex
 }
 
 function normalizeStandings(evaluated) {

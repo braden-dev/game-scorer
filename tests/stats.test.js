@@ -207,6 +207,17 @@ test('uses createdAt as the chronological fallback when finishedAt is missing', 
   assert.equal(buildPersonStats('p1', games).longestWinStreak, 2)
 })
 
+test('uses game ID before input index for equal finishedAt streak ordering', () => {
+  const games = [
+    dated(farkle('c-win', { p1: 100, p2: 50 }), 100, 1),
+    dated(farkle('a-win', { p1: 100, p2: 50 }), 100, 1),
+    dated(farkle('b-loss', { p1: 50, p2: 100 }), 100, 1),
+  ]
+
+  assert.equal(buildPersonStats('p1', games).longestWinStreak, 1)
+  assert.equal(buildPersonStats('p1', [games[2], games[0], games[1]]).longestWinStreak, 1)
+})
+
 test('surfaces malformed known-game records instead of treating them as zero stats', () => {
   assert.throws(
     () => buildPersonStats('p1', [{ id: 'bad', gameId: 'farkle', players: [] }]),
