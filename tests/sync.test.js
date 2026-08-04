@@ -26,6 +26,7 @@ test('loads safe defaults for missing and invalid sync data', () => {
   const storage = new MemoryStorage()
   assert.deepEqual(loadSyncStore(storage), {
     cache: { games: [], roster: [], activeGameId: null },
+    reconciledCache: { games: [], roster: [], activeGameId: null },
     outbox: [],
     lastSyncAt: null,
     lastError: null,

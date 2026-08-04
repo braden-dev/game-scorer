@@ -4,7 +4,7 @@ import { uid } from './lib/util.js'
 import { getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
-import { loadSyncStore, saveSyncStore } from './lib/sync.js'
+import { loadSyncStore } from './lib/sync.js'
 import { toRemoteRows } from './lib/cloudState.js'
 import { useCloudSync } from './lib/useCloudSync.js'
 import Home from './components/Home.jsx'
@@ -169,8 +169,7 @@ export default function App() {
   }
 
   const keepLocalForNow = () => {
-    const store = loadSyncStore()
-    saveSyncStore({ ...store, initialMigrationCompleted: true })
+    sync.updateSyncStore({ initialMigrationCompleted: true })
     setInitialMigrationCompleted(true)
   }
 
@@ -195,8 +194,13 @@ export default function App() {
       throw new Error(store.lastError || 'Could not publish local history yet.')
     }
 
-    saveSyncStore({ ...store, initialMigrationCompleted: true })
+    sync.updateSyncStore({ initialMigrationCompleted: true })
     setInitialMigrationCompleted(true)
+  }
+
+  const getReconciledCloudState = () => {
+    const store = loadSyncStore()
+    return store.reconciledCache ?? store.cache
   }
 
   if (newGameId) {
@@ -240,6 +244,7 @@ export default function App() {
           state={state}
           install={install}
           sync={configured ? sync : null}
+          getReconciledCloudState={configured ? getReconciledCloudState : null}
           migrationPending={configured && !initialMigrationCompleted}
           onPublishMigration={publishMigration}
           onImport={(imported) => applyMutation(

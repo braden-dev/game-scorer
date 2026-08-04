@@ -7,6 +7,7 @@ const SERIALIZED_METADATA_KEY = '__cloudMetadata'
 const EMPTY_CACHE = { games: [], roster: [], activeGameId: null }
 const EMPTY_STORE = {
   cache: EMPTY_CACHE,
+  reconciledCache: EMPTY_CACHE,
   outbox: [],
   lastSyncAt: null,
   lastError: null,
@@ -46,8 +47,12 @@ function normalizeCache(cache) {
 }
 
 function normalizeStore(store) {
+  const cache = normalizeCache(store?.cache)
   return {
-    cache: normalizeCache(store?.cache),
+    cache,
+    // Older cloud stores only had `cache`; treating it as the last known
+    // reconciled state keeps upgrades readable until the next remote sync.
+    reconciledCache: normalizeCache(store?.reconciledCache ?? cache),
     outbox: Array.isArray(store?.outbox) ? clone(store.outbox) : [],
     lastSyncAt: store?.lastSyncAt ?? null,
     lastError: store?.lastError ?? null,
@@ -438,7 +443,14 @@ export function loadSyncStore(storage) {
     if (!raw) return emptyStore()
     const parsed = JSON.parse(raw)
     const normalized = normalizeStore(parsed)
-    return { ...normalized, cache: restoreCache(normalized.cache, parsed?.cache?.[SERIALIZED_METADATA_KEY]) }
+    return {
+      ...normalized,
+      cache: restoreCache(normalized.cache, parsed?.cache?.[SERIALIZED_METADATA_KEY]),
+      reconciledCache: restoreCache(
+        normalized.reconciledCache,
+        parsed?.reconciledCache?.[SERIALIZED_METADATA_KEY],
+      ),
+    }
   } catch {
     return emptyStore()
   }
@@ -447,7 +459,11 @@ export function loadSyncStore(storage) {
 export function saveSyncStore(store, storage) {
   const normalized = normalizeStore(store)
   try {
-    const serializable = { ...normalized, cache: serializeCache(normalized.cache) }
+    const serializable = {
+      ...normalized,
+      cache: serializeCache(normalized.cache),
+      reconciledCache: serializeCache(normalized.reconciledCache),
+    }
     storageOrDefault(storage)?.setItem(KEY, JSON.stringify(serializable))
   } catch {
     // Local persistence is best effort; the caller still has the normalized copy.

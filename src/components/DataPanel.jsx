@@ -12,6 +12,7 @@ export default function DataPanel({
   sync,
   migrationPending = false,
   onPublishMigration,
+  getReconciledCloudState,
 }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
@@ -58,7 +59,7 @@ export default function DataPanel({
   const doCloudExport = async () => {
     setError(null)
     try {
-      const result = await shareOrDownloadBackup(state)
+      const result = await shareOrDownloadBackup(getReconciledCloudState?.() ?? state)
       if (result === 'cancelled') setStatus(null)
       else setStatus(result === 'shared' ? 'Cloud backup shared.' : 'Cloud backup downloaded.')
     } catch {

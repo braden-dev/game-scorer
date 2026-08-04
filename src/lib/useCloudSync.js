@@ -151,6 +151,12 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     return committed
   }, [publishStore])
 
+  const updateSyncStore = useCallback((update) => {
+    const current = storeRef.current ?? loadSyncStore()
+    const next = typeof update === 'function' ? update(current) : { ...current, ...update }
+    return commitStore(next)
+  }, [commitStore])
+
   const replayMutation = useCallback(async (mutation) => {
     if (isSoftDeleteMutation(mutation)) {
       return apiRef.current.softDelete(mutation.entity, mutation.entityId, mutationUpdatedAt(mutation))
@@ -200,13 +206,21 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       const latestCache = applyPendingSoftDeletes({ ...latestStore.cache, activeGameId: latestActiveGameId }, latestStore.outbox)
       const remoteState = fromRemoteRows(rows, latestActiveGameId)
       const mergedState = mergeRemoteState(latestCache, remoteState, previousSyncAt)
+      const reconciledState = initial || !latestStore.lastSyncAt
+        ? remoteState
+        : mergeRemoteState(latestStore.reconciledCache, remoteState, previousSyncAt)
       const mergedCache = copyCloudMetadata({
         ...mergedState,
         activeGameId: latestActiveGameId,
       }, mergedState)
+      const reconciledCache = copyCloudMetadata({
+        ...reconciledState,
+        activeGameId: latestActiveGameId,
+      }, reconciledState)
       store = commitStore({
         ...latestStore,
         cache: mergedCache,
+        reconciledCache,
         lastSyncAt: syncCursor,
         lastError: null,
       })
@@ -223,10 +237,16 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           ...latestStoreAfterReplay.cache,
           activeGameId: latestActiveGameId,
         }, latestStoreAfterReplay.cache)
+        const latestReconciledCache = copyCloudMetadata({
+          ...latestStoreAfterReplay.reconciledCache,
+          activeGameId: latestActiveGameId,
+        }, latestStoreAfterReplay.reconciledCache)
         const responseCache = mergeMutationResponse(latestCacheForReplay, mutation, response)
+        const responseReconciledCache = mergeMutationResponse(latestReconciledCache, mutation, response)
         store = commitStore({
           ...removeMutation(latestStoreAfterReplay, mutation.id),
           cache: responseCache,
+          reconciledCache: responseReconciledCache,
         }, [mutation.id])
         stateRef.current = responseCache
         if (mountedRef.current && response) setState(responseCache)
@@ -339,5 +359,5 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     }
   }, [configured, publishStore, setState, syncNow])
 
-  return { status, pendingCount, error, syncNow, enqueueStateMutation }
+  return { status, pendingCount, error, syncNow, enqueueStateMutation, updateSyncStore }
 }

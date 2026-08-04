@@ -546,3 +546,111 @@ test('caches an immediately queued next state before React renders it', async ()
     browser.restore()
   }
 })
+
+test('retains migration completion when a later mutation commits the store', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const replayGate = deferred()
+  const observed = { hook: null }
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => replayGate.promise,
+    softDelete: async () => {},
+  }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    observed.hook.updateSyncStore({ initialMigrationCompleted: true })
+    observed.hook.enqueueStateMutation({
+      id: 'm_after_migration',
+      entity: 'scorebook',
+      operation: 'upsert',
+      state: { games: [], roster: [{ id: 'p_one', name: 'One' }], activeGameId: null },
+      payload: { rows: { people: [], games: [], gamePlayers: [], rounds: [] } },
+    })
+
+    assert.equal(loadSyncStore(globalThis.localStorage).initialMigrationCompleted, true)
+    replayGate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
+    await act(async () => { await replayGate.promise })
+    assert.equal(loadSyncStore(globalThis.localStorage).initialMigrationCompleted, true)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('keeps cloud backup state reconciled while an optimistic mutation is pending', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const replayStarted = deferred()
+  const replayGate = deferred()
+  const remoteRows = {
+    people: [],
+    games: [{
+      id: 'g_remote',
+      game_id: 'farkle',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      settings: {},
+    }],
+    gamePlayers: [],
+    rounds: [],
+  }
+  const optimisticState = {
+    activeGameId: null,
+    roster: [],
+    games: [
+      { id: 'g_remote', gameId: 'farkle', createdAt: Date.parse('2026-01-01T00:00:00.000Z'), updatedAt: Date.parse('2026-01-01T00:00:00.000Z'), players: [], settings: {}, rounds: [], finishedAt: null },
+      { id: 'g_local', gameId: 'farkle', createdAt: Date.now(), updatedAt: Date.now(), players: [], settings: {}, rounds: [], finishedAt: null },
+    ],
+  }
+  const observed = { hook: null }
+  const api = {
+    fetchSnapshot: async () => remoteRows,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {
+      replayStarted.resolve()
+      return replayGate.promise
+    },
+    softDelete: async () => {},
+  }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    observed.hook.enqueueStateMutation({
+      id: 'm_optimistic_backup',
+      entity: 'scorebook',
+      operation: 'upsert',
+      state: optimisticState,
+      payload: { rows: toRemoteRows(optimisticState) },
+    })
+    await act(async () => { await replayStarted.promise })
+
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.deepEqual(stored.cache.games.map((game) => game.id).sort(), ['g_local', 'g_remote'])
+    assert.deepEqual(stored.reconciledCache.games.map((game) => game.id), ['g_remote'])
+    replayGate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
+    await act(async () => { await replayGate.promise })
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
