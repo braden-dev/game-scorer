@@ -41,6 +41,39 @@ export function useCallback(fn) { return fn }
 export function useMemo(factory) { return factory() }
 `
 
+const fakeReactWithEffects = fakeReact
+  .replace(
+    'const state = globalThis.__scorebookTestReactState ??= { slots: [], cursor: 0 }',
+    `const state = globalThis.__scorebookTestReactState ??= { slots: [], cursor: 0 }
+state.effectDeps ??= []
+state.effectCleanups ??= []
+state.pendingEffects ??= []`,
+  )
+  .replace(
+    'reset() { state.slots = []; state.cursor = 0; }',
+    'reset() { state.slots = []; state.cursor = 0; state.effectDeps = []; state.effectCleanups = []; state.pendingEffects = [] }',
+  )
+  .replace(
+    'export function useEffect() {}',
+    `export function useEffect(effect, dependencies) {
+  const index = state.cursor++
+  const previous = state.effectDeps[index]
+  const changed = !dependencies
+    || !previous
+    || dependencies.length !== previous.length
+    || dependencies.some((value, dependencyIndex) => value !== previous[dependencyIndex])
+  state.effectDeps[index] = dependencies
+  if (changed) state.pendingEffects.push({ index, effect })
+}
+globalThis.__scorebookTestReact.flushEffects = () => {
+  for (const { index, effect } of state.pendingEffects.splice(0)) {
+    state.effectCleanups[index]?.()
+    const cleanup = effect()
+    state.effectCleanups[index] = typeof cleanup === 'function' ? cleanup : null
+  }
+}`,
+  )
+
 const fakeSupabase = `
 export const supabase = {}
 export function cloudConfigured() { return true }
@@ -66,10 +99,10 @@ export function useCloudSync() {
 
 const fakeWakeLock = 'export function useWakeLock() {}'
 
-async function loadComponent(entryPoint) {
+async function loadComponent(entryPoint, { realEffects = false } = {}) {
   const aliases = {
-    react: fakeReact,
-    'react/jsx-runtime': fakeReact,
+    react: realEffects ? fakeReactWithEffects : fakeReact,
+    'react/jsx-runtime': realEffects ? fakeReactWithEffects : fakeReact,
     supabase: fakeSupabase,
     sync: fakeSync,
     wakeLock: fakeWakeLock,
@@ -254,6 +287,21 @@ test('invalid new-game routes render Home instead of dereferencing an unknown ga
   assert.ok(findElement(appTree, (element) => element.type?.name === 'Home'))
 })
 
+test('reserved new-game IDs render Home instead of inherited object properties', async () => {
+  const App = await loadComponent('src/App.jsx')
+
+  for (const gameId of ['__proto__', 'constructor', 'toString']) {
+    prepareStorage({ games: [], roster: [], activeGameId: null })
+    globalThis.window.location = { pathname: `/new-game/${gameId}` }
+    resetTestState()
+
+    globalThis.__scorebookTestReact.begin()
+    const appTree = App()
+
+    assert.ok(findElement(appTree, (element) => element.type?.name === 'Home'), gameId)
+  }
+})
+
 test('App follows direct game/home history destinations and excludes deleted games', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()
@@ -283,4 +331,31 @@ test('App follows direct game/home history destinations and excludes deleted gam
   const gamesRoute = App()
   assert.equal(gamesRoute.type.name, 'Games')
   assert.deepEqual(gamesRoute.props.games, [])
+})
+
+test('App popstate subscription clears activeGameId when leaving a game route', async () => {
+  const App = await loadComponent('src/App.jsx', { realEffects: true })
+  prepareStorage(gameState())
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  const handlers = new Map()
+  globalThis.window.addEventListener = (type, handler) => handlers.set(type, handler)
+  globalThis.window.removeEventListener = (type) => handlers.delete(type)
+  globalThis.window.dispatchEvent = (event) => handlers.get(event.type)?.(event)
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const gameTree = App()
+  assert.equal(gameTree.type.name, 'GameView')
+  globalThis.__scorebookTestReact.flushEffects()
+  assert.ok(handlers.has('popstate'))
+
+  globalThis.window.location.pathname = '/'
+  globalThis.window.dispatchEvent({ type: 'popstate' })
+
+  assert.equal(globalThis.__scorebookTestReactState.slots[0].activeGameId, null)
+  globalThis.__scorebookTestReact.begin()
+  const homeTree = App()
+  assert.ok(findElement(homeTree, (element) => element.type?.name === 'Home'))
+  globalThis.__scorebookTestReact.flushEffects()
+  assert.equal(JSON.parse(globalThis.localStorage.getItem('gamescorer.v1')).activeGameId, null)
 })

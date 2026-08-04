@@ -4,10 +4,13 @@ import threeThirteen from './threeThirteen.jsx'
 
 export const GAMES = [farkle, dutchBlitz, threeThirteen]
 
-export const GAMES_BY_ID = Object.fromEntries(GAMES.map((g) => [g.id, g]))
+export const GAMES_BY_ID = Object.assign(
+  Object.create(null),
+  Object.fromEntries(GAMES.map((g) => [g.id, g])),
+)
 
 export function getGameDef(id) {
-  return GAMES_BY_ID[id]
+  return typeof id === 'string' && Object.hasOwn(GAMES_BY_ID, id) ? GAMES_BY_ID[id] : undefined
 }
 
 /**

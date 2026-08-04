@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { hasStateData, loadReconciledState, loadState, saveState, saveStateToCloudCache, shouldOfferInitialMigration } from './lib/storage.js'
 import { uid } from './lib/util.js'
-import { getGameDef, evaluate, migrateState } from './games/index.js'
+import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { loadSyncStore } from './lib/sync.js'
@@ -262,7 +262,9 @@ export default function App() {
   })
 
   const requestedNewGameId = route.type === 'new-game' ? route.gameId : newGameId
-  const currentNewGameId = getGameDef(requestedNewGameId) ? requestedNewGameId : null
+  const currentNewGameId = typeof requestedNewGameId === 'string' && Object.hasOwn(GAMES_BY_ID, requestedNewGameId)
+    ? requestedNewGameId
+    : null
 
   if (currentNewGameId) {
     return (
