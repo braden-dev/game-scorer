@@ -207,7 +207,7 @@ function findElement(element, predicate) {
   if (!element || typeof element !== 'object') return null
   if (predicate(element)) return element
   const children = element.type?.name === 'AppShell'
-    ? [element.props.content, element.props.undoToast, element.props.syncNotice]
+    ? [element.props.content, element.props.undoToast]
     : childrenOf(element)
   for (const child of children) {
     const match = findElement(child, predicate)

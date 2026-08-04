@@ -1748,6 +1748,69 @@ test('continues pending retries at a steady delay and resets after success', asy
   }
 })
 
+test('cancels a scheduled retry timer when the hook unmounts', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const timers = []
+  const clearedTimers = []
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => { throw new Error('temporary network failure') },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  const flush = () => new Promise((resolve) => realSetTimeout(resolve, 0))
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true, api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => {
+      root.render(React.createElement(Harness))
+      await flush()
+    })
+
+    globalThis.setTimeout = (callback, delay) => {
+      const timer = { callback, delay, cancelled: false }
+      timers.push(timer)
+      return timer
+    }
+    globalThis.clearTimeout = (timer) => {
+      if (timer) {
+        timer.cancelled = true
+        clearedTimers.push(timer)
+      }
+    }
+
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_unmount_retry', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{ id: 'p_unmount', name: 'Unmount', updated_at: '2026-01-03T00:00:00.000Z' }] } },
+      })
+      await flush()
+    })
+
+    const retryTimer = timers[0]
+    assert.ok(retryTimer)
+    assert.equal(retryTimer.delay, 50)
+    await act(async () => { root.unmount() })
+    assert.deepEqual(clearedTimers, timers)
+    assert.ok(timers.every((timer) => timer.cancelled))
+  } finally {
+    await act(async () => { root.unmount() })
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+    browser.restore()
+  }
+})
+
 test('schedules one follow-up replay for a mutation added during replay', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
