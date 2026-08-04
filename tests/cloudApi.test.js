@@ -71,6 +71,17 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
 function mutableClient(initialRows = {}, hooks = {}) {
   const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
   const calls = []
+  const timestampColumns = new Set(['created_at', 'updated_at', 'deleted_at', 'finished_at'])
+  const normalizeInsertedRow = (row) => {
+    if (!hooks.normalizeTimestamps) return { ...row }
+    return Object.fromEntries(Object.entries(row).map(([column, value]) => {
+      if (!timestampColumns.has(column) || value === null || value === undefined) return [column, value]
+      const milliseconds = Date.parse(String(value))
+      if (!Number.isFinite(milliseconds)) return [column, value]
+      const iso = new Date(milliseconds).toISOString()
+      return [column, iso.replace(/\.(\d{3})Z$/, '.$1000+00:00')]
+    }))
+  }
   const keyFor = (table, row) => table === 'game_players'
     ? `${row.game_id}\u0000${row.person_id}`
     : row.id
@@ -136,7 +147,7 @@ function mutableClient(initialRows = {}, hooks = {}) {
             if (action === 'update') {
               for (const row of matches) Object.assign(row, payload)
             } else if (action === 'insert') {
-              tableRows.push(...payload.map((row) => ({ ...row })))
+              tableRows.push(...payload.map(normalizeInsertedRow))
               data = payload
             } else if (action === 'upsert') {
               hooks.beforeUpsert?.(table, payload, tableRows)
@@ -146,7 +157,7 @@ function mutableClient(initialRows = {}, hooks = {}) {
                   if (!query.upsertOptions?.ignoreDuplicates) Object.assign(existing, nextRow)
                   return query.upsertOptions?.ignoreDuplicates ? [] : [nextRow]
                 }
-                tableRows.push({ ...nextRow })
+                tableRows.push(normalizeInsertedRow(nextRow))
                 return [nextRow]
               })
             }
@@ -208,6 +219,23 @@ test('upsertRows supplies conflict keys while retaining version-aware updates', 
     ['game_id', 'g_one'], ['person_id', 'p_one'],
     ['game_id', 'g_one'], ['person_id', 'p_one'],
   ])
+})
+
+test('accepts a newly inserted row after PostgreSQL normalizes timestamp formatting', async () => {
+  const client = mutableClient({}, { normalizeTimestamps: true })
+
+  const result = await createCloudApi(client).upsertRows({ games: [{
+    id: 'g_timestamp_round_trip',
+    game_id: 'dutch-blitz',
+    created_at: '2026-08-04T18:26:03.103Z',
+    updated_at: '2026-08-04T18:26:03.103Z',
+    finished_at: null,
+    settings: { target: 75, blitzPenalty: 2 },
+    deleted_at: null,
+  }] })
+
+  assert.equal(result.games[0].id, 'g_timestamp_round_trip')
+  assert.equal(client.rows('games')[0].created_at, '2026-08-04T18:26:03.103000+00:00')
 })
 
 test('fetchRowsUpdatedSince filters every table without filtering tombstones', async () => {

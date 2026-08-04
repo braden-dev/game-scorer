@@ -13,6 +13,7 @@ const ENTITY_TABLES = {
 }
 
 const PAGE_SIZE = 1000
+const TIMESTAMP_COLUMNS = new Set(['created_at', 'updated_at', 'deleted_at', 'finished_at'])
 
 function providerMessage(error) {
   if (error && typeof error === 'object' && 'message' in error) return error.message
@@ -56,11 +57,13 @@ function canonicalPayload(row) {
     .map((key) => [key, row[key] ?? null]))
 }
 
+function canonicalComparablePayload(row) {
+  return Object.fromEntries(Object.entries(canonicalPayload(row))
+    .map(([key, value]) => [key, TIMESTAMP_COLUMNS.has(key) ? timestamp(value) : value]))
+}
+
 function sameCanonicalPayload(existing, attempted) {
-  const requested = canonicalPayload(attempted)
-  const canonical = Object.fromEntries(Object.keys(requested)
-    .map((key) => [key, existing?.[key] ?? null]))
-  return samePayload(canonical, requested)
+  return samePayload(canonicalComparablePayload(existing), canonicalComparablePayload(attempted))
 }
 
 function restorePayload(row) {
