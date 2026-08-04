@@ -81,11 +81,12 @@ export function cloudConfigured() { return true }
 
 const fakeSync = `
 const state = globalThis.__scorebookTestSync ??= { mutations: [] }
+export const CONFLICT_MESSAGE = 'This was changed on another device. The shared version is now shown.'
 export function useCloudSync() {
   return {
     status: 'synced',
     pendingCount: state.mutations.length,
-    error: null,
+    error: state.error ?? null,
     syncNow: async () => {},
     enqueueStateMutation(mutation) {
       state.mutations.push(mutation)
@@ -144,11 +145,18 @@ function childrenOf(element) {
 function findElement(element, predicate) {
   if (!element || typeof element !== 'object') return null
   if (predicate(element)) return element
-  for (const child of childrenOf(element)) {
+  const children = element.type?.name === 'AppShell'
+    ? [element.props.content, element.props.undoToast, element.props.syncNotice]
+    : childrenOf(element)
+  for (const child of children) {
     const match = findElement(child, predicate)
     if (match) return match
   }
   return null
+}
+
+function appContent(appTree) {
+  return appTree?.type?.name === 'AppShell' ? appTree.props.content : appTree
 }
 
 function textOf(element) {
@@ -201,6 +209,7 @@ function prepareStorage(state) {
 function resetTestState() {
   globalThis.__scorebookTestReact.reset()
   globalThis.__scorebookTestSync.mutations = []
+  globalThis.__scorebookTestSync.error = null
 }
 
 test('App round deletion queues the updated game before the round tombstone', async () => {
@@ -211,17 +220,17 @@ test('App round deletion queues the updated game before the round tombstone', as
 
   globalThis.__scorebookTestReact.begin()
   const appTree = App()
-  assert.equal(appTree.type.name, 'GameView')
+  assert.equal(appContent(appTree).type.name, 'GameView')
 
   globalThis.__scorebookTestReact.reset()
   globalThis.__scorebookTestReact.begin()
-  let gameTree = appTree.type(appTree.props)
+  let gameTree = appContent(appTree).type(appContent(appTree).props)
   const historyRow = findElement(gameTree, (element) => element.type === 'tr' && element.props?.onClick)
   assert.ok(historyRow)
   historyRow.props.onClick()
 
   globalThis.__scorebookTestReact.begin()
-  gameTree = appTree.type(appTree.props)
+  gameTree = appContent(appTree).type(appContent(appTree).props)
   const roundSheet = findElement(gameTree, (element) => element.props?.onDelete)
   assert.ok(roundSheet)
   roundSheet.props.onDelete()
@@ -255,13 +264,13 @@ test('round deletion asks for confirmation and explains the brief Undo window', 
   const appTree = App()
   globalThis.__scorebookTestReact.reset()
   globalThis.__scorebookTestReact.begin()
-  let gameTree = appTree.type(appTree.props)
+  let gameTree = appContent(appTree).type(appContent(appTree).props)
   const historyRow = findElement(gameTree, (element) => element.type === 'tr' && element.props?.onClick)
   assert.ok(historyRow)
   historyRow.props.onClick()
 
   globalThis.__scorebookTestReact.begin()
-  gameTree = appTree.type(appTree.props)
+  gameTree = appContent(appTree).type(appContent(appTree).props)
   const roundSheet = findElement(gameTree, (element) => element.props?.onDelete)
   assert.ok(roundSheet)
   roundSheet.props.onDelete()
@@ -284,7 +293,7 @@ test('game deletion can be undone before the ten-second window expires', async (
 
   globalThis.__scorebookTestReact.begin()
   const appTree = App()
-  const homeElement = appTree.props.children[0]
+  const homeElement = appContent(appTree).props.children[0]
   const homeTree = homeElement.type(homeElement.props)
   const gameCard = findElement(homeTree, (element) => element.type?.name === 'GameCard')
   assert.ok(gameCard)
@@ -295,7 +304,7 @@ test('game deletion can be undone before the ten-second window expires', async (
 
   globalThis.__scorebookTestReact.begin()
   const appAfterDelete = App()
-  const deletedHomeElement = appAfterDelete.props.children[0]
+  const deletedHomeElement = appContent(appAfterDelete).props.children[0]
   let renderedHome = deletedHomeElement.type(deletedHomeElement.props)
   const toastElement = findElement(appAfterDelete, (element) => element.type?.name === 'UndoToast')
   assert.ok(toastElement)
@@ -308,8 +317,8 @@ test('game deletion can be undone before the ten-second window expires', async (
 
   globalThis.__scorebookTestReact.begin()
   const appAfterUndo = App()
-  renderedHome = appAfterUndo.props.children[0].type(appAfterUndo.props.children[0].props)
-  assert.deepEqual(appAfterUndo.props.children[0].props.games.map((game) => game.id), ['g_mutations'])
+  renderedHome = appContent(appAfterUndo).props.children[0].type(appContent(appAfterUndo).props.children[0].props)
+  assert.deepEqual(appContent(appAfterUndo).props.children[0].props.games.map((game) => game.id), ['g_mutations'])
   assert.deepEqual(globalThis.__scorebookTestSync.mutations.map(({ entity, operation }) => ({ entity, operation })), [
     { entity: 'scorebook', operation: 'upsert' },
   ])
@@ -322,7 +331,7 @@ test('expired game deletion cannot restore the snapshot', async () => {
 
   globalThis.__scorebookTestReact.begin()
   const initial = App()
-  const homeElement = initial.props.children[0]
+  const homeElement = appContent(initial).props.children[0]
   const homeTree = homeElement.type(homeElement.props)
   const gameCard = findElement(homeTree, (element) => element.type?.name === 'GameCard')
   findElement(gameCard.type(gameCard.props), (element) => element.props?.['aria-label'] === 'Delete Farkle game').props.onClick()
@@ -335,7 +344,7 @@ test('expired game deletion cannot restore the snapshot', async () => {
 
   globalThis.__scorebookTestReact.begin()
   const afterExpiry = App()
-  assert.deepEqual(afterExpiry.props.children[0].props.games, [])
+  assert.deepEqual(appContent(afterExpiry).props.children[0].props.games, [])
   assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('gamescorer.v1')).games, [])
 })
 
@@ -347,11 +356,11 @@ test('round deletion restores the complete round snapshot through Undo', async (
 
   globalThis.__scorebookTestReact.begin()
   const initial = App()
-  initial.props.onUpdate({ ...initial.props.game, rounds: [] })
+  initial.props.content.props.onUpdate({ ...initial.props.content.props.game, rounds: [] })
 
   globalThis.__scorebookTestReact.begin()
   const afterDelete = App()
-  assert.equal(afterDelete.props.game.rounds.length, 0)
+  assert.equal(afterDelete.props.content.props.game.rounds.length, 0)
   const toastElement = afterDelete.props.undoToast
   assert.ok(toastElement)
   const toast = toastElement.type(toastElement.props)
@@ -359,7 +368,7 @@ test('round deletion restores the complete round snapshot through Undo', async (
 
   globalThis.__scorebookTestReact.begin()
   const afterUndo = App()
-  assert.deepEqual(afterUndo.props.game.rounds.map(({ id, entries }) => ({ id, entries })), gameState().games[0].rounds)
+  assert.deepEqual(afterUndo.props.content.props.game.rounds.map(({ id, entries }) => ({ id, entries })), gameState().games[0].rounds)
 })
 
 test('GameView player removal reaches App and queues a join-row tombstone', async () => {
@@ -372,13 +381,13 @@ test('GameView player removal reaches App and queues a join-row tombstone', asyn
   const appTree = App()
   globalThis.__scorebookTestReact.reset()
   globalThis.__scorebookTestReact.begin()
-  let gameTree = appTree.type(appTree.props)
+  let gameTree = appContent(appTree).type(appContent(appTree).props)
   const playersButton = findElement(gameTree, (element) => element.props?.['aria-label'] === 'Players')
   assert.ok(playersButton)
   playersButton.props.onClick()
 
   globalThis.__scorebookTestReact.begin()
-  gameTree = appTree.type(appTree.props)
+  gameTree = appContent(appTree).type(appContent(appTree).props)
   const removeButton = findElement(gameTree, (element) => element.props?.['aria-label'] === 'Remove Two')
   assert.ok(removeButton)
   removeButton.props.onClick()
@@ -442,7 +451,7 @@ test('App follows direct game/home history destinations and excludes deleted gam
 
   globalThis.__scorebookTestReact.begin()
   const gameRoute = App()
-  assert.equal(gameRoute.type.name, 'GameView')
+  assert.equal(appContent(gameRoute).type.name, 'GameView')
 
   globalThis.window.location.pathname = '/'
   globalThis.__scorebookTestReact.reset()
@@ -460,8 +469,8 @@ test('App follows direct game/home history destinations and excludes deleted gam
   globalThis.__scorebookTestReact.reset()
   globalThis.__scorebookTestReact.begin()
   const gamesRoute = App()
-  assert.equal(gamesRoute.type.name, 'Games')
-  assert.deepEqual(gamesRoute.props.games, [])
+  assert.equal(appContent(gamesRoute).type.name, 'Games')
+  assert.deepEqual(appContent(gamesRoute).props.games, [])
 })
 
 test('App route matrix renders each people, leaderboard, and games branch', async () => {
@@ -482,10 +491,11 @@ test('App route matrix renders each people, leaderboard, and games branch', asyn
     globalThis.__scorebookTestReact.begin()
 
     const appTree = App()
+    const content = appContent(appTree)
 
-    assert.equal(appTree.type.name, route.marker, route.pathname)
+    assert.equal(content.type.name, route.marker, route.pathname)
     for (const [prop, value] of Object.entries(route.props)) {
-      assert.deepEqual(appTree.props[prop], value, `${route.pathname} ${prop}`)
+      assert.deepEqual(content.props[prop], value, `${route.pathname} ${prop}`)
     }
   }
 })
@@ -502,17 +512,44 @@ test('App popstate subscription clears activeGameId when leaving a game route', 
 
   globalThis.__scorebookTestReact.begin()
   const gameTree = App()
-  assert.equal(gameTree.type.name, 'GameView')
+  assert.equal(appContent(gameTree).type.name, 'GameView')
   globalThis.__scorebookTestReact.flushEffects()
   assert.ok(handlers.has('popstate'))
+  gameTree.props.content.props.onUpdate({ ...gameTree.props.content.props.game, rounds: [] })
 
-  globalThis.window.location.pathname = '/'
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  assert.ok(afterDelete.props.undoToast)
+
+  globalThis.window.location.pathname = '/people'
   globalThis.window.dispatchEvent({ type: 'popstate' })
 
   assert.equal(globalThis.__scorebookTestReactState.slots[0].activeGameId, null)
   globalThis.__scorebookTestReact.begin()
-  const homeTree = App()
-  assert.ok(findElement(homeTree, (element) => element.type?.name === 'Home'))
+  const peopleTree = App()
+  assert.equal(appContent(peopleTree).type.name, 'People')
+  assert.ok(peopleTree.props.undoToast)
   globalThis.__scorebookTestReact.flushEffects()
   assert.equal(JSON.parse(globalThis.localStorage.getItem('gamescorer.v1')).activeGameId, null)
+})
+
+test('App surfaces the exact conflict notice on routes without DataPanel', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/people' }
+  resetTestState()
+  globalThis.__scorebookTestSync.error = 'This was changed on another device. The shared version is now shown.'
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+
+  assert.equal(appTree.type.name, 'AppShell')
+  assert.equal(appTree.props.content.type.name, 'People')
+  assert.equal(appTree.props.syncNotice.props.role, 'status')
+  assert.equal(appTree.props.syncNotice.props['aria-live'], 'polite')
+  assert.equal(
+    textOf(appTree.props.syncNotice),
+    'This was changed on another device. The shared version is now shown.',
+  )
 })

@@ -6,7 +6,7 @@ import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { loadSyncStore } from './lib/sync.js'
 import { toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
-import { useCloudSync } from './lib/useCloudSync.js'
+import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
@@ -34,6 +34,10 @@ function revivedGame(game, deletedAt) {
     players: game.players.map((player) => ({ ...player, updatedAt })),
     rounds: game.rounds.map((round) => ({ ...round, updatedAt })),
   }
+}
+
+export function AppShell({ content, undoToast, syncNotice }) {
+  return <>{content}{undoToast}{syncNotice}</>
 }
 
 export default function App() {
@@ -370,8 +374,13 @@ export default function App() {
     ? requestedNewGameId
     : null
 
+  const syncNotice = sync?.error === CONFLICT_MESSAGE ? (
+    <p className="global-sync-notice" role="status" aria-live="polite">{CONFLICT_MESSAGE}</p>
+  ) : null
+
+  let content
   if (currentNewGameId) {
-    return (
+    content = (
       <NewGame
         gameId={currentNewGameId}
         roster={state.roster}
@@ -381,10 +390,8 @@ export default function App() {
         onRemoveFromRoster={removeFromRoster}
       />
     )
-  }
-
-  if (activeGame) {
-    return (
+  } else if (activeGame) {
+    content = (
       <GameView
         game={activeGame}
         roster={state.roster}
@@ -392,61 +399,53 @@ export default function App() {
         onBack={closeGame}
         onRematch={rematch}
         onAddToRoster={addToRoster}
-        undoToast={undoToast}
       />
+    )
+  } else if (route.type === 'people') {
+    content = <People roster={state.roster} games={playableGames} onNavigate={navigate} />
+  } else if (route.type === 'person') {
+    content = <PersonPage personId={route.id} roster={state.roster} games={playableGames} onNavigate={navigate} />
+  } else if (route.type === 'leaderboard') {
+    content = <Leaderboard roster={state.roster} games={playableGames} onNavigate={navigate} />
+  } else if (route.type === 'games') {
+    content = <Games games={playableGames} onNavigate={navigate} />
+  } else {
+    content = (
+      <>
+        <Home
+          games={playableGames}
+          onNew={openNewGame}
+          onOpen={openGame}
+          onDelete={deleteGame}
+          onOpenData={() => setShowData(true)}
+          installBanner={<InstallBanner install={install} />}
+          onNavigate={navigate}
+        />
+        {showData && (
+          <DataPanel
+            state={state}
+            install={install}
+            sync={configured ? sync : null}
+            getReconciledCloudState={configured ? getReconciledCloudState : null}
+            migrationPending={migrationVisible}
+            onPublishMigration={publishMigration}
+            onImport={(imported) => applyMutation(
+              () => migrateState(imported),
+              stateChangeMutation,
+            )}
+            onClose={() => setShowData(false)}
+          />
+        )}
+        {migrationVisible && (
+          <MigrationPanel
+            state={state}
+            onPublish={publishMigration}
+            onKeepLocal={keepLocalForNow}
+          />
+        )}
+      </>
     )
   }
 
-  if (route.type === 'people') {
-    return <People roster={state.roster} games={playableGames} onNavigate={navigate} />
-  }
-
-  if (route.type === 'person') {
-    return <PersonPage personId={route.id} roster={state.roster} games={playableGames} onNavigate={navigate} />
-  }
-
-  if (route.type === 'leaderboard') {
-    return <Leaderboard roster={state.roster} games={playableGames} onNavigate={navigate} />
-  }
-
-  if (route.type === 'games') {
-    return <Games games={playableGames} onNavigate={navigate} />
-  }
-
-  return (
-    <>
-      <Home
-        games={playableGames}
-        onNew={openNewGame}
-        onOpen={openGame}
-        onDelete={deleteGame}
-        onOpenData={() => setShowData(true)}
-        installBanner={<InstallBanner install={install} />}
-        onNavigate={navigate}
-      />
-      {showData && (
-        <DataPanel
-          state={state}
-          install={install}
-          sync={configured ? sync : null}
-          getReconciledCloudState={configured ? getReconciledCloudState : null}
-          migrationPending={migrationVisible}
-          onPublishMigration={publishMigration}
-          onImport={(imported) => applyMutation(
-            () => migrateState(imported),
-            stateChangeMutation,
-          )}
-          onClose={() => setShowData(false)}
-        />
-      )}
-      {undoToast}
-      {migrationVisible && (
-        <MigrationPanel
-          state={state}
-          onPublish={publishMigration}
-          onKeepLocal={keepLocalForNow}
-        />
-      )}
-    </>
-  )
+  return <AppShell content={content} undoToast={undoToast} syncNotice={syncNotice} />
 }
