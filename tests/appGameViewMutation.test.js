@@ -65,6 +65,10 @@ state.pendingEffects ??= []`,
   state.effectDeps[index] = dependencies
   if (changed) state.pendingEffects.push({ index, effect })
 }
+globalThis.__scorebookTestReact.begin = () => { state.cursor = 0 }
+globalThis.__scorebookTestReact.reset = () => {
+  state.slots = []; state.cursor = 0; state.effectDeps = []; state.effectCleanups = []; state.pendingEffects = []
+}
 globalThis.__scorebookTestReact.flushEffects = () => {
   for (const { index, effect } of state.pendingEffects.splice(0)) {
     state.effectCleanups[index]?.()
@@ -211,10 +215,19 @@ function prepareStorage(state) {
 }
 
 function resetTestState() {
+  for (const cleanup of globalThis.__scorebookTestReactState.effectCleanups ?? []) cleanup?.()
   globalThis.__scorebookTestReact.reset()
+  globalThis.__scorebookTestReactState.effectDeps = []
+  globalThis.__scorebookTestReactState.effectCleanups = []
+  globalThis.__scorebookTestReactState.pendingEffects = []
   globalThis.__scorebookTestSync.mutations = []
   globalThis.__scorebookTestSync.error = null
   globalThis.__scorebookTestSync.hydratedState = null
+}
+
+async function settleEffects() {
+  globalThis.__scorebookTestReact.flushEffects()
+  await new Promise((resolve) => setImmediate(resolve))
 }
 
 test('App round deletion queues the round tombstone before the updated game', async () => {
@@ -285,7 +298,7 @@ test('round deletion asks for confirmation and explains the brief Undo window', 
 })
 
 test('initial migration stamps local history newer than a stale incremental cursor', async () => {
-  const App = await loadComponent('src/App.jsx')
+  const App = await loadComponent('src/App.jsx', { realEffects: true })
   const state = gameState()
   prepareStorage(state)
   globalThis.window.location = { pathname: '/' }
@@ -297,10 +310,8 @@ test('initial migration stamps local history newer than a stale incremental curs
 
   globalThis.__scorebookTestReact.begin()
   const appTree = App()
-  const migrationPanel = findElement(appTree, (element) => element.type?.name === 'MigrationPanel')
-  assert.ok(migrationPanel)
-
-  await migrationPanel.props.onPublish()
+  await settleEffects()
+  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   const mutation = globalThis.__scorebookTestSync.mutations[0]
   assert.equal(mutation.initialMigration, true)
@@ -317,7 +328,7 @@ test('initial migration stamps local history newer than a stale incremental curs
 })
 
 test('first-run migration skips local rows already present in the cloud snapshot', async () => {
-  const App = await loadComponent('src/App.jsx')
+  const App = await loadComponent('src/App.jsx', { realEffects: true })
   const state = gameState()
   prepareStorage(state)
   globalThis.window.location = { pathname: '/' }
@@ -333,17 +344,15 @@ test('first-run migration skips local rows already present in the cloud snapshot
 
   globalThis.__scorebookTestReact.begin()
   const appTree = App()
-  const migrationPanel = findElement(appTree, (element) => element.type?.name === 'MigrationPanel')
-  assert.ok(migrationPanel)
-
-  await migrationPanel.props.onPublish()
+  await settleEffects()
+  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   const mutation = globalThis.__scorebookTestSync.mutations[0]
   assert.deepEqual(mutation.payload.rows, { people: [], games: [], gamePlayers: [], rounds: [] })
 })
 
 test('first-run migration reconciles conflicting same-ID local rows to cloud authority before display', async () => {
-  const App = await loadComponent('src/App.jsx')
+  const App = await loadComponent('src/App.jsx', { realEffects: true })
   const localState = gameState()
   prepareStorage(localState)
   globalThis.window.location = { pathname: '/' }
@@ -368,10 +377,8 @@ test('first-run migration reconciles conflicting same-ID local rows to cloud aut
 
   globalThis.__scorebookTestReact.begin()
   const appTree = App()
-  const migrationPanel = findElement(appTree, (element) => element.type?.name === 'MigrationPanel')
-  assert.ok(migrationPanel)
-
-  await migrationPanel.props.onPublish()
+  await settleEffects()
+  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
 
   globalThis.__scorebookTestReact.begin()
   const refreshedTree = App()

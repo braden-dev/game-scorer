@@ -10,13 +10,10 @@ export default function DataPanel({
   onClose,
   install,
   sync,
-  migrationPending = false,
-  onPublishMigration,
   getReconciledCloudState,
 }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
-  const [publishing, setPublishing] = useState(false)
   const fileRef = useRef(null)
 
   const gameCount = state.games.length
@@ -78,19 +75,6 @@ export default function DataPanel({
     }
   }
 
-  const doPublishMigration = async () => {
-    setError(null)
-    setPublishing(true)
-    try {
-      await onPublishMigration()
-      setStatus('Local history published.')
-    } catch (publishError) {
-      setError(publishError instanceof Error ? publishError.message : String(publishError))
-    } finally {
-      setPublishing(false)
-    }
-  }
-
   return (
     <Modal title="Data & backup" onClose={onClose}>
       <p className="panel-stat">
@@ -102,14 +86,6 @@ export default function DataPanel({
       {sync && (
         <div className="data-status">
           <SyncStatus {...sync} />
-        </div>
-      )}
-
-      {sync && migrationPending && onPublishMigration && (
-        <div className="data-actions">
-          <button type="button" className="btn ghost" onClick={doPublishMigration} disabled={publishing}>
-            Publish local history
-          </button>
         </div>
       )}
 

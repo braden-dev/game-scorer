@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { hasStateData, loadReconciledState, loadState, saveState, saveStateToCloudCache, shouldOfferInitialMigration } from './lib/storage.js'
+import { hasStateData, loadReconciledState, loadState, saveState, saveStateToCloudCache } from './lib/storage.js'
 import { uid } from './lib/util.js'
 import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
@@ -17,7 +17,6 @@ import Games from './components/Games.jsx'
 import Leaderboard from './components/Leaderboard.jsx'
 import DataPanel from './components/DataPanel.jsx'
 import InstallBanner from './components/InstallBanner.jsx'
-import MigrationPanel from './components/MigrationPanel.jsx'
 import UndoToast from './components/UndoToast.jsx'
 
 const UNDO_WINDOW_MS = 10_000
@@ -110,6 +109,8 @@ export default function App() {
     () => loadSyncStore().initialMigrationCompleted,
   )
   const stateRef = useRef(state)
+  const migrationStartedRef = useRef(false)
+  const migrationEnqueuedRef = useRef(false)
   const undoRef = useRef(null)
   const [undoAction, setUndoAction] = useState(null)
   const install = useInstallPrompt()
@@ -524,12 +525,6 @@ export default function App() {
     startGame(activeGame.gameId, activeGame.players, { ...activeGame.settings })
   }
 
-  const keepLocalForNow = () => {
-    sync.cancelSyncMutations((mutation) => mutation.initialMigration)
-    sync.updateSyncStore({ initialMigrationCompleted: true })
-    setInitialMigrationCompleted(true)
-  }
-
   const publishMigration = async () => {
     const migrationStore = loadSyncStore()
     const existingMigration = migrationStore.outbox.find((mutation) => mutation.initialMigration)
@@ -565,6 +560,7 @@ export default function App() {
         },
       }),
     )
+    migrationEnqueuedRef.current = true
     await sync.syncNow()
     const store = loadSyncStore()
     if (store.outbox.some((mutation) => mutation.id === migrationId)) {
@@ -575,13 +571,23 @@ export default function App() {
     setInitialMigrationCompleted(true)
   }
 
+  useEffect(() => {
+    const store = loadSyncStore()
+    if (!configured || !hadLocalDataAtStartup || store.initialMigrationCompleted || migrationStartedRef.current) return
+    migrationStartedRef.current = true
+    void publishMigration().catch(() => {})
+  }, [configured, hadLocalDataAtStartup, publishMigration])
+
+  useEffect(() => {
+    if (!migrationEnqueuedRef.current || initialMigrationCompleted) return
+    const store = loadSyncStore()
+    if (store.outbox.some((mutation) => mutation.initialMigration)) return
+    sync.updateSyncStore({ initialMigrationCompleted: true })
+    setInitialMigrationCompleted(true)
+  }, [initialMigrationCompleted, sync.pendingCount, sync.updateSyncStore])
+
   const getReconciledCloudState = () => loadReconciledState()
 
-  const migrationVisible = shouldOfferInitialMigration({
-    configured,
-    hadLocalDataAtStartup,
-    initialMigrationCompleted,
-  })
   const undoToast = undoAction && (
     <UndoToast
       key={undoAction.id}
@@ -651,8 +657,6 @@ export default function App() {
             install={install}
             sync={configured ? sync : null}
             getReconciledCloudState={configured ? getReconciledCloudState : null}
-            migrationPending={migrationVisible}
-            onPublishMigration={publishMigration}
             onImport={(imported) => applyMutation(
               () => migrateState(imported),
               (nextState, previousState) => ({
@@ -666,13 +670,6 @@ export default function App() {
               }),
             )}
             onClose={() => setShowData(false)}
-          />
-        )}
-        {migrationVisible && (
-          <MigrationPanel
-            state={state}
-            onPublish={publishMigration}
-            onKeepLocal={keepLocalForNow}
           />
         )}
       </>
