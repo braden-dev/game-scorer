@@ -245,21 +245,27 @@ test('accepts a newly inserted row after PostgreSQL normalizes timestamp formatt
 test('accepts an equivalent inserted row when PostgreSQL adds server defaults', async () => {
   const client = mutableClient({}, {
     normalizeTimestamps: true,
-    serverDefaults: { games: { server_default: 'postgres-default' } },
+    serverDefaults: {
+      games: {
+        created_at: '2026-08-04T18:26:03.103Z',
+        updated_at: '2026-08-04T18:26:03.103Z',
+        settings: {},
+        finished_at: null,
+        deleted_at: null,
+      },
+    },
   })
 
   const result = await createCloudApi(client).upsertRows({ games: [{
     id: 'g_server_default',
     game_id: 'dutch-blitz',
-    created_at: '2026-08-04T18:26:03.103Z',
-    updated_at: '2026-08-04T18:26:03.103Z',
-    finished_at: null,
-    settings: { target: 75, blitzPenalty: 2 },
-    deleted_at: null,
   }] })
 
-  assert.equal(result.games[0].server_default, 'postgres-default')
-  assert.equal(client.rows('games')[0].server_default, 'postgres-default')
+  assert.equal(result.games[0].created_at, '2026-08-04T18:26:03.103000+00:00')
+  assert.equal(result.games[0].updated_at, '2026-08-04T18:26:03.103000+00:00')
+  assert.deepEqual(result.games[0].settings, {})
+  assert.equal(result.games[0].finished_at, null)
+  assert.equal(result.games[0].deleted_at, null)
 })
 
 test('compares non-UTC timestamps at application millisecond precision', async () => {
@@ -281,18 +287,59 @@ test('compares non-UTC timestamps at application millisecond precision', async (
 
 test('does not treat a malformed timestamp as null during equal-version comparison', async () => {
   const updatedAt = '2026-08-04T18:26:03.103Z'
-  const client = mutableClient({ people: [{
-    id: 'p_invalid_timestamp', name: 'Remote', created_at: null, updated_at: updatedAt, deleted_at: null,
+  const client = mutableClient({ games: [{
+    id: 'g_invalid_finished_at', game_id: 'dutch-blitz',
+    created_at: '2026-08-04T18:26:02.103Z', updated_at: updatedAt,
+    finished_at: null, settings: {}, deleted_at: null,
   }] })
 
   await assert.rejects(
-    createCloudApi(client).upsertRows({ people: [{
-      id: 'p_invalid_timestamp', name: 'Remote', created_at: 'not-a-timestamp',
-      updated_at: updatedAt, deleted_at: null,
+    createCloudApi(client).upsertRows({ games: [{
+      id: 'g_invalid_finished_at', game_id: 'dutch-blitz',
+      created_at: '2026-08-04T18:26:02.103Z', updated_at: updatedAt,
+      finished_at: 'not-a-timestamp', settings: {}, deleted_at: null,
     }] }),
-    /people.*conflicting equal-version row/,
+    /games.*conflicting equal-version row/,
   )
-  assert.equal(client.rows('people')[0].created_at, null)
+  assert.equal(client.rows('games')[0].finished_at, null)
+})
+
+test('rejects an invalid updated_at instead of treating it as a missing version', async () => {
+  const updatedAt = '2026-08-04T18:26:03.103Z'
+  const client = mutableClient({ games: [{
+    id: 'g_invalid_updated_at', game_id: 'dutch-blitz',
+    created_at: '2026-08-04T18:26:02.103Z', updated_at: updatedAt,
+    finished_at: null, settings: {}, deleted_at: null,
+  }] })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({ games: [{
+      id: 'g_invalid_updated_at', game_id: 'dutch-blitz',
+      created_at: '2026-08-04T18:26:02.103Z', updated_at: 'not-a-timestamp',
+      finished_at: null, settings: {}, deleted_at: null,
+    }] }),
+    /games.*invalid timestamp/,
+  )
+  assert.equal(client.rows('games')[0].updated_at, updatedAt)
+})
+
+test('rejects an invalid deleted_at instead of treating it as a missing version', async () => {
+  const updatedAt = '2026-08-04T18:26:03.103Z'
+  const client = mutableClient({ games: [{
+    id: 'g_invalid_deleted_at', game_id: 'dutch-blitz',
+    created_at: '2026-08-04T18:26:02.103Z', updated_at: updatedAt,
+    finished_at: null, settings: {}, deleted_at: null,
+  }] })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({ games: [{
+      id: 'g_invalid_deleted_at', game_id: 'dutch-blitz',
+      created_at: '2026-08-04T18:26:02.103Z', updated_at: updatedAt,
+      finished_at: null, settings: {}, deleted_at: 'not-a-timestamp',
+    }] }),
+    /games.*invalid timestamp/,
+  )
+  assert.equal(client.rows('games')[0].deleted_at, null)
 })
 
 test('fetchRowsUpdatedSince filters every table without filtering tombstones', async () => {

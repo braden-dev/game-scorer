@@ -14,6 +14,7 @@ const ENTITY_TABLES = {
 
 const PAGE_SIZE = 1000
 const TIMESTAMP_COLUMNS = new Set(['created_at', 'updated_at', 'deleted_at', 'finished_at'])
+const INVALID_VERSION = Symbol('invalid row version')
 
 function providerMessage(error) {
   if (error && typeof error === 'object' && 'message' in error) return error.message
@@ -38,7 +39,14 @@ function canonicalTimestamp(value) {
 }
 
 function rowVersion(row) {
-  const versions = [timestamp(row?.updated_at), timestamp(row?.deleted_at)].filter((value) => value !== null)
+  const versions = []
+  for (const column of ['updated_at', 'deleted_at']) {
+    const rawValue = row?.[column]
+    if (rawValue === null || rawValue === undefined || rawValue === '') continue
+    const value = timestamp(rawValue)
+    if (value === null) return INVALID_VERSION
+    versions.push(value)
+  }
   return versions.length ? Math.max(...versions) : Number.NEGATIVE_INFINITY
 }
 
@@ -165,6 +173,10 @@ function equalVersionConflictError(table) {
   return new Error(`Supabase ${table}: conflicting equal-version row`)
 }
 
+function assertValidVersion(table, version) {
+  if (version === INVALID_VERSION) throw new Error(`Supabase ${table}: invalid timestamp in row version`)
+}
+
 async function checkedWrite(query, table, action) {
   const data = await checked(query, table)
   const matched = Array.isArray(data) ? data.length > 0 : data != null
@@ -175,6 +187,8 @@ async function checkedWrite(query, table, action) {
 async function compareAndSetRow(client, definition, row, existing) {
   const existingVersion = rowVersion(existing)
   const requestedVersion = rowVersion(row)
+  assertValidVersion(definition.table, existingVersion)
+  assertValidVersion(definition.table, requestedVersion)
   if (existingVersion > requestedVersion) {
     if (sameCanonicalPayload(existing, row)) return existing
     throw conflictError(definition.table)
@@ -194,6 +208,7 @@ async function compareAndSetRow(client, definition, row, existing) {
 }
 
 async function upsertWithoutOverwriting(client, definition, row) {
+  assertValidVersion(definition.table, rowVersion(row))
   await checked(
     client.from(definition.table).upsert([row], {
       onConflict: definition.conflict,
@@ -256,9 +271,15 @@ export function createCloudApi(client) {
       for (const definition of TABLES) {
         const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
         for (const row of payload) {
+          const requestedVersion = rowVersion(row)
+          assertValidVersion(definition.table, requestedVersion)
           const existing = await findExisting(client, definition, row)
-          if (existing && rowVersion(existing) > rowVersion(row) && !sameCanonicalPayload(existing, row)) {
-            throw conflictError(definition.table)
+          if (existing) {
+            const existingVersion = rowVersion(existing)
+            assertValidVersion(definition.table, existingVersion)
+            if (existingVersion > requestedVersion && !sameCanonicalPayload(existing, row)) {
+              throw conflictError(definition.table)
+            }
           }
           canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row))
         }
@@ -306,6 +327,7 @@ export function createCloudApi(client) {
       if (!definition) throw new Error(`Unknown cloud entity: ${entity}`)
 
       const requestedVersion = timestamp(updatedAt)
+      assertValidVersion(definition.table, rowVersion({ updated_at: updatedAt }))
       let query = client.from(definition.table).select('*')
       query = keyFilters(query, definition, typeof id === 'object' ? id : { id })
       const data = await checked(query, definition.table)
