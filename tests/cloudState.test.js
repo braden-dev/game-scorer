@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { copyCloudMetadata, fromRemoteRows, normalizeName, toRemoteRows } from '../src/lib/cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, normalizeName, toRemoteRows } from '../src/lib/cloudState.js'
 
 test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
@@ -108,6 +108,46 @@ test('reconstructs nested state, resolves names, converts timestamps, and filter
       finishedAt: 1704412800000,
     }],
   })
+})
+
+test('round-trips deleted round metadata after the visible round is removed', () => {
+  const sourceRows = {
+    people: [],
+    games: [{
+      id: 'g_round', game_id: 'farkle', updated_at: '2026-01-03T00:00:00.000Z', settings: {},
+    }],
+    gamePlayers: [],
+    rounds: [{
+      id: 'r_removed', game_id: 'g_round', round_index: 4,
+      entries: { p_one: { score: 42 } },
+      updated_at: '2026-01-03T00:00:01.000Z', deleted_at: '2026-01-03T00:00:02.000Z',
+    }],
+  }
+
+  const state = fromRemoteRows(sourceRows)
+  const rows = toRemoteRows(state)
+  assert.deepEqual(rows.rounds, [sourceRows.rounds[0]])
+  assert.deepEqual(toRemoteRows(fromRemoteRows(rows)).rounds, [sourceRows.rounds[0]])
+})
+
+test('emits preserved local round data when recording a parent-keyed tombstone', () => {
+  const deletedAt = '2026-01-03T00:00:02.000Z'
+  const cache = {
+    activeGameId: 'g_round',
+    roster: [],
+    games: [{
+      id: 'g_round', gameId: 'farkle', players: [], settings: {}, rounds: [{
+        id: 'r_removed', roundIndex: 4, entries: { p_one: { score: 42 } },
+      }],
+    }],
+  }
+
+  assert.deepEqual(toRemoteRows(applyCloudSoftDelete(
+    cache, 'rounds', { gameId: 'g_round', id: 'r_removed' }, deletedAt,
+  )).rounds, [{
+    id: 'r_removed', game_id: 'g_round', round_index: 4, entries: { p_one: { score: 42 } },
+    updated_at: deletedAt, deleted_at: deletedAt,
+  }])
 })
 
 test('uses null for missing optional remote timestamps', () => {

@@ -112,6 +112,7 @@ function tombstoneRecord(row, id, parentId = null) {
   if (row?.seat_order !== undefined) record.seatOrder = row.seat_order
   if (row?.name_snapshot !== undefined) record.nameSnapshot = row.name_snapshot
   if (row?.round_index !== undefined) record.roundIndex = row.round_index
+  if (row?.entries !== undefined) record.entries = row.entries
   return record
 }
 
@@ -208,7 +209,16 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt) {
       }
       const rounds = rows(game.rounds)
       const matched = rounds.filter((round) => round.id === requestedId)
-      if (matched.length) records.push({ ...tombstone, gameId: game.id, id: requestedId })
+      if (matched.length) {
+        const round = matched[0]
+        records.push({
+          ...tombstone,
+          gameId: game.id,
+          id: requestedId,
+          roundIndex: field(round, 'roundIndex', 'round_index'),
+          entries: round.entries ?? {},
+        })
+      }
       return matched.length ? { ...game, rounds: rounds.filter((round) => round.id !== requestedId) } : game
     })
     if (records.length === 0) records.push({ ...tombstone, gameId: requestedGameId ?? null, id: requestedId })
@@ -246,6 +256,15 @@ function latestPlayerTombstone(metadata, gameId, personId) {
       const latestVersion = tombstoneVersion(latest)
       const recordVersion = tombstoneVersion(record)
       return recordVersion >= latestVersion ? record : latest
+    }, null)
+}
+
+function latestRoundTombstone(metadata, gameId, roundId) {
+  return metadataRecords(metadata, 'rounds')
+    .filter((record) => record.gameId === gameId && record.id === roundId && isTombstone(record))
+    .reduce((latest, record) => {
+      if (!latest) return record
+      return tombstoneVersion(record) >= tombstoneVersion(latest) ? record : latest
     }, null)
 }
 
@@ -340,17 +359,46 @@ export function toRemoteRows(state) {
     return [...liveRows, ...deletedRows]
   })
 
-  const rounds = sourceGames.flatMap((game) => rows(game.rounds).map((round, roundIndex) => ({
-    id: round.id,
-    game_id: game.id,
-    round_index: field(round, 'roundIndex', 'round_index') ?? roundIndex,
-    entries: round.entries ?? {},
-    updated_at: isoTimestamp(
-      field(round, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
-      true,
-    ),
-    deleted_at: isoTimestamp(field(round, 'deletedAt', 'deleted_at')),
-  })))
+  const rounds = sourceGames.flatMap((game) => {
+    const sourceRounds = rows(game.rounds)
+    const tombstones = metadataRecords(metadata, 'rounds')
+      .filter((record) => record.gameId === game.id && isTombstone(record))
+    const currentIds = new Set(sourceRounds.map((round) => round.id))
+    const liveRows = sourceRounds.map((round, roundIndex) => {
+      const tombstone = latestRoundTombstone(metadata, game.id, round.id)
+      const liveVersion = timestamp(field(round, 'updatedAt', 'updated_at'))
+        ?? timestamp(field(game, 'updatedAt', 'updated_at'))
+        ?? 0
+      const deleted = tombstone && tombstoneVersion(tombstone) >= liveVersion ? tombstone : null
+      return {
+        id: round.id,
+        game_id: game.id,
+        round_index: field(deleted, 'roundIndex', 'round_index') ?? field(round, 'roundIndex', 'round_index') ?? roundIndex,
+        entries: field(deleted, 'entries', 'entries') ?? round.entries ?? {},
+        updated_at: isoTimestamp(
+          deleted
+            ? field(deleted, 'updatedAt', 'updated_at') ?? field(deleted, 'deletedAt', 'deleted_at')
+            : field(round, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
+          true,
+        ),
+        deleted_at: isoTimestamp(field(deleted, 'deletedAt', 'deleted_at') ?? field(round, 'deletedAt', 'deleted_at')),
+      }
+    })
+    const deletedRows = tombstones
+      .filter((tombstone) => !currentIds.has(tombstone.id))
+      .map((tombstone) => ({
+        id: tombstone.id,
+        game_id: game.id,
+        round_index: tombstone.roundIndex ?? 0,
+        entries: tombstone.entries ?? {},
+        updated_at: isoTimestamp(
+          field(tombstone, 'updatedAt', 'updated_at') ?? field(tombstone, 'deletedAt', 'deleted_at'),
+          true,
+        ),
+        deleted_at: isoTimestamp(field(tombstone, 'deletedAt', 'deleted_at')),
+      }))
+    return [...liveRows, ...deletedRows]
+  })
 
   return { people, games, gamePlayers, rounds }
 }
