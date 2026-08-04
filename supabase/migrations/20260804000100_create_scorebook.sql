@@ -10,7 +10,7 @@ $$;
 
 create table if not exists public.people (
   id text primary key,
-  name text not null check (char_length(name) between 1 and 80 and char_length(btrim(name)) >= 1),
+  name text not null check (char_length(btrim(name)) between 1 and 80),
   normalized_name text not null check (char_length(normalized_name) between 1 and 80),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -38,7 +38,7 @@ create table if not exists public.game_players (
   game_id text not null references public.games(id) on delete restrict,
   person_id text not null references public.people(id) on delete restrict,
   seat_order integer not null check (seat_order >= 0),
-  name_snapshot text not null check (char_length(name_snapshot) between 1 and 80 and char_length(btrim(name_snapshot)) >= 1),
+  name_snapshot text not null check (char_length(btrim(name_snapshot)) between 1 and 80),
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
   primary key (game_id, person_id)

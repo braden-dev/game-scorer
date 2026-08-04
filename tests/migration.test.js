@@ -17,6 +17,17 @@ function assertLiveRoundPositions(rows) {
   assert.equal(new Set(liveKeys).size, liveKeys.length, 'duplicate live round position')
 }
 
+test('name constraints measure the trimmed value for people and player snapshots', () => {
+  assert.match(
+    migration,
+    /name\s+text\s+not\s+null\s+check\s*\(\s*char_length\(btrim\(name\)\)\s+between\s+1\s+and\s+80\s*\)/i,
+  )
+  assert.match(
+    migration,
+    /name_snapshot\s+text\s+not\s+null\s+check\s*\(\s*char_length\(btrim\(name_snapshot\)\)\s+between\s+1\s+and\s+80\s*\)/i,
+  )
+})
+
 test('round position uniqueness excludes tombstones but rejects duplicate live rows', () => {
   assert.doesNotMatch(migration, /unique\s*\(\s*game_id\s*,\s*round_index\s*\)/i)
   assert.match(
