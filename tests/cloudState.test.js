@@ -747,3 +747,35 @@ test('selects player tombstones by the maximum updated or deleted timestamp', ()
     updated_at: '1970-01-01T00:00:00.900Z', deleted_at: '1970-01-01T00:00:00.100Z',
   }])
 })
+
+test('keeps roster tombstones authoritative over newer historical player candidates', () => {
+  const state = fromRemoteRows({
+    people: [
+      {
+        id: 'p_archived',
+        name: 'Archived Person',
+        updated_at: '2026-01-01T00:00:00.000Z',
+        deleted_at: '2026-01-01T00:00:01.000Z',
+      },
+      { id: 'p_active', name: 'Active Person', updated_at: '2026-01-02T00:00:00.000Z' },
+    ],
+    games: [{ id: 'g_history', game_id: 'farkle', updated_at: '2026-01-04T00:00:00.000Z', settings: {} }],
+    gamePlayers: [
+      {
+        game_id: 'g_history', person_id: 'p_archived', seat_order: 0,
+        name_snapshot: 'Historical Snapshot', updated_at: '2026-01-03T00:00:00.000Z',
+      },
+      {
+        game_id: 'g_history', person_id: 'p_active', seat_order: 1,
+        name_snapshot: 'Active Snapshot', updated_at: '2026-01-03T00:00:00.000Z',
+      },
+    ],
+    rounds: [],
+  })
+
+  const rows = toRemoteRows(state)
+
+  assert.equal(rows.people.find(({ id }) => id === 'p_archived').deleted_at, '2026-01-01T00:00:01.000Z')
+  assert.equal(rows.gamePlayers.find(({ person_id }) => person_id === 'p_archived').name_snapshot, 'Historical Snapshot')
+  assert.equal(rows.people.find(({ id }) => id === 'p_active').deleted_at, null)
+})

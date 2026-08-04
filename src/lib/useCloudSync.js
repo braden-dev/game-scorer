@@ -195,7 +195,8 @@ function mergeMutationResponse(cache, mutation, response, fallbackCache = cache)
 
 function initialCache(store, state) {
   if (hasCachedState(store)) {
-    return copyCloudMetadata({ ...store.cache, activeGameId: state?.activeGameId ?? null }, store.cache)
+    const merged = mergeRemoteState(state, store.cache)
+    return copyCloudMetadata({ ...merged, activeGameId: state?.activeGameId ?? null }, merged)
   }
   return cacheForState(state)
 }

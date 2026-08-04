@@ -600,7 +600,9 @@ export function toRemoteRows(state) {
     const tombstone = metadataRecords(metadata, 'roster')
       .filter((record) => record.id === person.id && isTombstone(record))
       .reduce((latest, record) => (!latest || tombstoneVersion(record) >= tombstoneVersion(latest) ? record : latest), null)
-    const deleted = tombstone && tombstoneVersion(tombstone) >= person.updatedAt ? tombstone : null
+    const deleted = tombstone && (
+      person.sourcePriority < 2 || tombstoneVersion(tombstone) >= person.updatedAt
+    ) ? tombstone : null
     const createdMilliseconds = Number.isFinite(person.createdAt) ? person.createdAt : 0
 
     return {

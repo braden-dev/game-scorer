@@ -4,7 +4,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createCloudApi } from '../src/lib/cloudApi.js'
 import { fromRemoteRows, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
-import { loadSyncStore } from '../src/lib/sync.js'
+import { loadSyncStore, saveSyncStore } from '../src/lib/sync.js'
 
 class MemoryStorage {
   #values = new Map()
@@ -1611,6 +1611,69 @@ test('caches an immediately queued next state before React renders it', async ()
     assert.equal(stored.cache.activeGameId, 'g_local')
     gate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
     await act(async () => { await gate.promise })
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('merges newer legacy state with a stale cloud cache during first hydration', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const staleCloudCache = fromRemoteRows({
+    people: [
+      { id: 'p_cloud', name: 'Cloud Person', updated_at: '2026-01-01T00:00:00.000Z' },
+      {
+        id: 'p_deleted', name: 'Deleted Person', updated_at: '2026-01-01T00:00:01.000Z',
+        deleted_at: '2026-01-01T00:00:02.000Z',
+      },
+    ],
+    games: [{ id: 'g_cloud', game_id: 'farkle', updated_at: '2026-01-01T00:00:00.000Z', settings: {} }],
+    gamePlayers: [],
+    rounds: [],
+  })
+  saveSyncStore({
+    cache: staleCloudCache,
+    reconciledCache: staleCloudCache,
+    outbox: [],
+    lastSyncAt: null,
+  }, globalThis.localStorage)
+
+  const legacyState = {
+    activeGameId: 'g_local',
+    roster: [{ id: 'p_local', name: 'Local Person', createdAt: 2000, updatedAt: 3000 }],
+    games: [{
+      id: 'g_local', gameId: 'farkle', createdAt: 2000, updatedAt: 3000,
+      players: [{ id: 'p_local', name: 'Local Person', updatedAt: 3000 }],
+      settings: {}, rounds: [], finishedAt: null,
+    }],
+  }
+  const observed = { updates: [] }
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  function Harness() {
+    useCloudSync(legacyState, (state) => observed.updates.push(state), { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    const hydrated = observed.updates.at(-1)
+    assert.deepEqual(hydrated.games.map(({ id }) => id).sort(), ['g_cloud', 'g_local'])
+    assert.deepEqual(hydrated.roster.map(({ id }) => id).sort(), ['p_cloud', 'p_local'])
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(stored.cache[Symbol.for('gamescorer.cloudMetadata')].roster[0].id, 'p_deleted')
+    const publishableRows = toRemoteRows(stored.cache)
+    assert.deepEqual(publishableRows.games.map(({ id }) => id).sort(), ['g_cloud', 'g_local'])
+    assert.deepEqual(publishableRows.gamePlayers.map(({ person_id }) => person_id), ['p_local'])
+    assert.deepEqual(publishableRows.people.map(({ id }) => id).sort(), ['p_cloud', 'p_deleted', 'p_local'])
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
