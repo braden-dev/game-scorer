@@ -510,6 +510,16 @@ export function toRemoteRows(state) {
   return { people, games, gamePlayers, rounds }
 }
 
+export function migrationCounts(state) {
+  const games = rows(state?.games)
+  const remoteRows = toRemoteRows(state)
+  return {
+    games: games.length,
+    rounds: games.reduce((sum, game) => sum + rows(game.rounds).length, 0),
+    people: remoteRows.people.length,
+  }
+}
+
 export function toRemoteRowsDelta(state, previousState = {}) {
   const previousGames = new Map(rows(previousState.games).map((game) => [game.id, game]))
   const previousPeople = new Map(rows(previousState.roster).map((person) => [person.id, person]))

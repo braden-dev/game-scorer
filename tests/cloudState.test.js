@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, migrationCounts, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
 
 test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
@@ -81,6 +81,39 @@ test('emits a people row for historical game players missing from the roster', (
     { id: 'p_history', name: 'Historical Player' },
   ])
   assert.equal(rows.gamePlayers[0].person_id, 'p_history')
+})
+
+test('migration counts match deduplicated published people, including historical players', () => {
+  const state = {
+    roster: [{ id: 'p_roster', name: 'Roster Player' }],
+    games: [
+      {
+        id: 'g_one',
+        gameId: 'farkle',
+        createdAt: 100,
+        updatedAt: 100,
+        players: [
+          { id: 'p_roster', name: 'Roster Player' },
+          { id: 'p_history', name: 'Historical Player' },
+        ],
+        settings: {},
+        rounds: [{ id: 'r_one', entries: {} }],
+        finishedAt: null,
+      },
+      {
+        id: 'g_two',
+        gameId: 'farkle',
+        createdAt: 200,
+        updatedAt: 200,
+        players: [{ id: 'p_history', name: 'Historical Player' }],
+        settings: {},
+        rounds: [],
+        finishedAt: null,
+      },
+    ],
+  }
+
+  assert.deepEqual(migrationCounts(state), { games: 2, rounds: 1, people: 2 })
 })
 
 test('delta rows exclude unchanged local history from later normal mutations', () => {

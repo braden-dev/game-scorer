@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import { migrationCounts } from '../lib/cloudState.js'
 
 export default function MigrationPanel({ state, onPublish, onKeepLocal }) {
   const [publishing, setPublishing] = useState(false)
   const [error, setError] = useState(null)
-  const roundCount = state.games.reduce((sum, game) => sum + game.rounds.length, 0)
+  const { games: gameCount, rounds: roundCount, people: peopleCount } = migrationCounts(state)
 
   const publish = async () => {
     setPublishing(true)
@@ -21,9 +22,9 @@ export default function MigrationPanel({ state, onPublish, onKeepLocal }) {
     <section className="panel" aria-labelledby="migration-title">
       <h2 id="migration-title">Publish local history?</h2>
       <p className="hint">
-        Share <strong>{state.games.length}</strong> game{state.games.length === 1 ? '' : 's'},{' '}
+        Share <strong>{gameCount}</strong> game{gameCount === 1 ? '' : 's'},{' '}
         <strong>{roundCount}</strong> round{roundCount === 1 ? '' : 's'}, and{' '}
-        <strong>{state.roster.length}</strong> player{state.roster.length === 1 ? '' : 's'} with your
+        <strong>{peopleCount}</strong> player{peopleCount === 1 ? '' : 's'} with your
         family and friends.
       </p>
       <p className="hint">
