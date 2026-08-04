@@ -19,6 +19,38 @@ function providerMessage(error) {
   return String(error)
 }
 
+function timestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  const milliseconds = Date.parse(String(value))
+  return Number.isFinite(milliseconds) ? milliseconds : null
+}
+
+function rowVersion(row) {
+  const versions = [timestamp(row?.updated_at), timestamp(row?.deleted_at)].filter((value) => value !== null)
+  return versions.length ? Math.max(...versions) : Number.NEGATIVE_INFINITY
+}
+
+function rowValue(row, column) {
+  if (row?.[column] !== undefined) return row[column]
+  const camel = column.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
+  return row?.[camel]
+}
+
+function keyFilters(query, definition, row) {
+  let next = query
+  for (const [column] of definition.keys ?? definition.conflict.split(',').map((column) => [column])) {
+    const value = rowValue(row, column)
+    if (value === undefined || value === null) throw new Error(`Missing ${column} for ${definition.table} write`)
+    next = next.eq(column, value)
+  }
+  return next
+}
+
+function selectedKeys(definition) {
+  return (definition.keys ?? definition.conflict.split(',').map((column) => [column])).map(([column]) => column).join(',')
+}
+
 async function checked(response, table) {
   let result
   try {
@@ -47,6 +79,42 @@ async function readTable(client, { key, table, orderBy = ['id'] }, since = null)
   return [key, allRows]
 }
 
+async function findExisting(client, definition, row) {
+  const query = keyFilters(client.from(definition.table).select('*'), definition, row)
+  const data = await checked(query, definition.table)
+  return Array.isArray(data) ? data[0] ?? null : data
+}
+
+function conflictError(table) {
+  return new Error(`Supabase ${table}: stale mutation; newer remote row exists`)
+}
+
+async function checkedWrite(query, table, action) {
+  const data = await checked(query, table)
+  const matched = Array.isArray(data) ? data.length > 0 : data != null
+  if (!matched) throw conflictError(table)
+  return data
+}
+
+async function insertRow(client, definition, row) {
+  await checkedWrite(
+    client.from(definition.table).insert([row]).select(selectedKeys(definition)),
+    definition.table,
+    'insert',
+  )
+}
+
+async function compareAndSetRow(client, definition, row, existing) {
+  if (rowVersion(existing) > rowVersion(row)) throw conflictError(definition.table)
+
+  let query = keyFilters(client.from(definition.table).update(row), definition, row)
+  const expectedUpdatedAt = existing.updated_at
+  query = expectedUpdatedAt === null || expectedUpdatedAt === undefined
+    ? query.is('updated_at', null)
+    : query.eq('updated_at', expectedUpdatedAt)
+  await checkedWrite(query.select(selectedKeys(definition)), definition.table, 'update')
+}
+
 function entityDefinition(entity) {
   if (entity === 'game_players') return ENTITY_TABLES.gamePlayers
   return ENTITY_TABLES[entity]
@@ -70,11 +138,11 @@ export function createCloudApi(client) {
     async upsertRows(rows = {}) {
       for (const definition of TABLES) {
         const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
-        if (!payload.length) continue
-        await checked(
-          client.from(definition.table).upsert(payload, { onConflict: definition.conflict }),
-          definition.table,
-        )
+        for (const row of payload) {
+          const existing = await findExisting(client, definition, row)
+          if (existing) await compareAndSetRow(client, definition, row, existing)
+          else await insertRow(client, definition, row)
+        }
       }
     },
 
@@ -87,15 +155,24 @@ export function createCloudApi(client) {
       const definition = entityDefinition(entity)
       if (!definition) throw new Error(`Unknown cloud entity: ${entity}`)
 
-      let query = client.from(definition.table).update({ deleted_at: updatedAt, updated_at: updatedAt })
+      const requestedVersion = timestamp(updatedAt)
+      let query = client.from(definition.table).select('*')
+      query = keyFilters(query, definition, typeof id === 'object' ? id : { id })
+      const data = await checked(query, definition.table)
+      const existing = Array.isArray(data) ? data[0] ?? null : data
+      if (!existing) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
+      if (rowVersion(existing) > (requestedVersion ?? Number.NEGATIVE_INFINITY)) throw conflictError(definition.table)
+
+      query = client.from(definition.table).update({ deleted_at: updatedAt, updated_at: updatedAt })
       for (const [column, camelName] of definition.keys) {
         const value = entityValue(id, camelName, column)
         if (value === undefined || value === null) throw new Error(`Missing ${column} for ${definition.table} soft delete`)
         query = query.eq(column, value)
       }
-      const data = await checked(query.select(definition.keys.map(([column]) => column).join(',')), definition.table)
-      const matched = Array.isArray(data) ? data.length > 0 : data != null
-      if (!matched) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
+      query = existing.updated_at === null || existing.updated_at === undefined
+        ? query.is('updated_at', null)
+        : query.eq('updated_at', existing.updated_at)
+      await checkedWrite(query.select(selectedKeys(definition)), definition.table, 'soft delete')
     },
   }
 }

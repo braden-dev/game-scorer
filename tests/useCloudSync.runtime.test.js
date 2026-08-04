@@ -178,6 +178,116 @@ test('keeps a soft-delete mutation pending when the API rejects a zero-row updat
   }
 })
 
+test('keeps a successful local delete tombstoned after remote merge and replay', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const gate = deferred()
+  const updates = []
+  let deleted = 0
+  const api = {
+    fetchSnapshot: async () => gate.promise,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    softDelete: async () => { deleted += 1 },
+  }
+  const dependencies = { configured: true, api }
+  const observed = { value: null }
+  const setState = (nextState) => { updates.push(nextState) }
+  function Harness({ state }) {
+    observed.value = useCloudSync(state, setState, dependencies)
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness, {
+      state: {
+        activeGameId: 'g_delete',
+        roster: [{ id: 'p_one', name: 'One' }],
+        games: [{ id: 'g_delete', gameId: 'farkle', players: [], rounds: [], settings: {} }],
+      },
+    })) })
+    await act(async () => { root.render(React.createElement(Harness, {
+      state: { activeGameId: null, roster: [{ id: 'p_one', name: 'One' }], games: [] },
+    })) })
+    await act(async () => {
+      observed.value.enqueueStateMutation({
+        id: 'm_delete', entity: 'games', entityId: 'g_delete', operation: 'softDelete',
+        updatedAt: '2026-01-03T00:00:00.000Z',
+      })
+    })
+
+    gate.resolve({
+      people: [{ id: 'p_one', name: 'One', updated_at: '2026-01-01T00:00:00.000Z' }],
+      games: [{ id: 'g_delete', game_id: 'farkle', updated_at: '2026-01-01T00:00:00.000Z', settings: {} }],
+      gamePlayers: [], rounds: [],
+    })
+    await act(async () => { await gate.promise; await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+    assert.equal(deleted, 1)
+    assert.deepEqual(updates.at(-1).games, [])
+    const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.equal(stored.cache.__cloudMetadata.games[0].id, 'g_delete')
+    assert.equal(stored.cache.__cloudMetadata.games[0].deletedAt, '2026-01-03T00:00:00.000Z')
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('schedules one follow-up replay for a mutation added during replay', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const firstReplay = deferred()
+  const replayStarted = deferred()
+  const rowsSent = []
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async (rows) => {
+      rowsSent.push(rows)
+      if (rowsSent.length === 1) {
+        replayStarted.resolve()
+        await firstReplay.promise
+      }
+    },
+    softDelete: async () => {},
+  }
+  const observed = { value: null }
+  const setState = () => {}
+  const dependencies = { configured: true, api }
+  function Harness() {
+    observed.value = useCloudSync({ games: [], roster: [], activeGameId: null }, setState, dependencies)
+    return null
+  }
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.value.enqueueStateMutation({
+        id: 'm_first', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{ id: 'p_first', name: 'First', updated_at: '2026-01-01T00:00:00.000Z' }] } },
+      })
+      await replayStarted.promise
+    })
+    assert.equal(rowsSent.length, 1)
+    await act(async () => {
+      observed.value.enqueueStateMutation({
+        id: 'm_second', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{ id: 'p_second', name: 'Second', updated_at: '2026-01-02T00:00:00.000Z' }] } },
+      })
+    })
+    firstReplay.resolve()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+
+    assert.equal(rowsSent.length, 2)
+    assert.equal(rowsSent[1].people[0].id, 'p_second')
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('mounts the hook safely in local mode when cloud is not configured', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

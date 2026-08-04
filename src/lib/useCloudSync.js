@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cloudConfigured, supabase } from './supabase.js'
 import { createCloudApi } from './cloudApi.js'
-import { copyCloudMetadata, fromRemoteRows, hasCloudMetadata, mergeCloudCache, toRemoteRows } from './cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, hasCloudMetadata, mergeCloudCache, toRemoteRows } from './cloudState.js'
 import {
   conservativeSyncCursor,
   activeGameIdForSync,
@@ -67,6 +67,22 @@ function mutationUpdatedAt(mutation) {
   return isoTimestamp(value)
 }
 
+function isSoftDeleteMutation(mutation) {
+  return mutation?.operation === 'softDelete' || mutation?.operation === 'delete'
+}
+
+function applyPendingSoftDeletes(cache, outbox) {
+  return (outbox ?? []).filter(isSoftDeleteMutation).reduce(
+    (nextCache, mutation) => applyCloudSoftDelete(
+      nextCache,
+      mutation.entity,
+      mutation.entityId,
+      mutationUpdatedAt(mutation),
+    ),
+    cache,
+  )
+}
+
 function initialCache(store, state) {
   if (hasCachedState(store)) {
     return copyCloudMetadata({ ...store.cache, activeGameId: state?.activeGameId ?? null }, store.cache)
@@ -103,7 +119,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   }, [publishStore])
 
   const replayMutation = useCallback(async (mutation) => {
-    if (mutation?.operation === 'softDelete' || mutation?.operation === 'delete') {
+    if (isSoftDeleteMutation(mutation)) {
       await apiRef.current.softDelete(mutation.entity, mutation.entityId, mutationUpdatedAt(mutation))
       return
     }
@@ -129,12 +145,15 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     const syncCursor = conservativeSyncCursor(store.lastSyncAt, syncStartedAt)
     const previousSyncAt = store.lastSyncAt
     const activeGameId = activeGameIdForSync(stateRef, store)
-    const baseCache = copyCloudMetadata(
+    const baseCache = applyPendingSoftDeletes(copyCloudMetadata(
       copyCloudMetadata({ ...cacheForState(stateRef.current), ...store.cache, activeGameId }, store.cache),
       stateRef.current,
-    )
-    store = { ...store, cache: baseCache }
-    publishStore(store)
+    ), store.outbox)
+    store = commitStore({ ...store, cache: baseCache })
+    if (store.outbox.some(isSoftDeleteMutation)) {
+      stateRef.current = baseCache
+      if (mountedRef.current) setState(baseCache)
+    }
     if (mountedRef.current) {
       setStatus('syncing')
       setError(null)
@@ -146,7 +165,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         : await apiRef.current.fetchRowsUpdatedSince(store.lastSyncAt)
       const latestStore = storeRef.current ?? store
       const latestActiveGameId = activeGameIdForSync(stateRef, latestStore)
-      const latestCache = { ...latestStore.cache, activeGameId: latestActiveGameId }
+      const latestCache = applyPendingSoftDeletes({ ...latestStore.cache, activeGameId: latestActiveGameId }, latestStore.outbox)
       const remoteState = fromRemoteRows(rows, latestActiveGameId)
       const mergedState = mergeRemoteState(latestCache, remoteState, previousSyncAt)
       const mergedCache = copyCloudMetadata({
@@ -162,14 +181,29 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       stateRef.current = mergedCache
       if (mountedRef.current) setState(mergedCache)
 
+      let replayedSoftDelete = false
       for (const mutation of [...store.outbox]) {
         await replayMutation(mutation)
+        replayedSoftDelete ||= isSoftDeleteMutation(mutation)
         const latestStoreAfterReplay = storeRef.current ?? store
         store = commitStore(removeMutation(latestStoreAfterReplay, mutation.id), [mutation.id])
       }
 
       store = commitStore({ ...store, lastError: null })
-      if (mountedRef.current) setStatus(store.outbox.length ? 'pending' : 'synced')
+      const pendingDeleteCache = applyPendingSoftDeletes(store.cache, store.outbox)
+      const pendingDeleteChanged = pendingDeleteCache !== store.cache
+      if (pendingDeleteChanged) store = commitStore({ ...store, cache: pendingDeleteCache })
+      if (replayedSoftDelete || pendingDeleteChanged) {
+        stateRef.current = store.cache
+        if (mountedRef.current) setState(store.cache)
+      }
+      const pendingAfterReplay = store.outbox.length > 0
+      if (mountedRef.current) setStatus(pendingAfterReplay ? 'pending' : 'synced')
+      if (pendingAfterReplay) {
+        setTimeout(() => {
+          if (mountedRef.current && storeRef.current?.outbox.length) void syncNow()
+        }, 0)
+      }
     } catch (syncError) {
       const errorMessage = messageFor(syncError)
       store = commitStore({ ...(storeRef.current ?? store), lastError: errorMessage })
@@ -188,15 +222,29 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   const enqueueStateMutation = useCallback((mutation) => {
     if (!configured || !mutation) return null
     const store = storeRef.current ?? loadSyncStore()
-    const next = enqueueMutation({
-      ...store,
-      cache: cacheForState(stateRef.current, store.cache),
-    }, {
+    const nextMutation = {
       id: mutation.id ?? uid('m'),
       createdAt: mutation.createdAt ?? Date.now(),
       ...mutation,
-    })
+    }
+    let nextCache = cacheForState(stateRef.current, store.cache)
+    if (isSoftDeleteMutation(nextMutation)) {
+      nextCache = applyCloudSoftDelete(
+        nextCache,
+        nextMutation.entity,
+        nextMutation.entityId,
+        mutationUpdatedAt(nextMutation),
+      )
+    }
+    const next = enqueueMutation({
+      ...store,
+      cache: nextCache,
+    }, nextMutation)
     commitStore(next)
+    if (isSoftDeleteMutation(nextMutation)) {
+      stateRef.current = next.cache
+      if (mountedRef.current) setState(next.cache)
+    }
     if (mountedRef.current) setStatus('pending')
     if (online()) void syncNow()
     return next

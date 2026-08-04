@@ -149,6 +149,75 @@ export function mergeCloudCache(cache, state) {
   return next
 }
 
+function mutationEntity(entity) {
+  if (entity === 'game_players' || entity === 'gamePlayers') return 'gamePlayers'
+  return entity
+}
+
+function mutationPart(id, camelName, snakeName) {
+  if (id && typeof id === 'object') return id[camelName] ?? id[snakeName]
+  return camelName === 'id' ? id : undefined
+}
+
+function addCloudTombstone(metadata, group, record) {
+  const records = metadataRecords(metadata, group)
+  const same = records.filter((candidate) => {
+    if (group === 'gamePlayers' || group === 'rounds') {
+      return candidate.gameId === record.gameId && candidate.id === record.id
+    }
+    return candidate.id === record.id
+  })
+  if (same.some((candidate) => tombstoneVersion(candidate) > tombstoneVersion(record))) return records
+  return [...records.filter((candidate) => !same.includes(candidate)), record]
+}
+
+export function applyCloudSoftDelete(cache, entity, id, updatedAt) {
+  const source = cache && typeof cache === 'object' ? cache : { games: [], roster: [], activeGameId: null }
+  const group = mutationEntity(entity)
+  const version = timestamp(updatedAt)
+  const tombstone = { updatedAt: version, deletedAt: updatedAt }
+  const metadata = source[CLOUD_METADATA] ?? {}
+  const nextMetadata = {
+    roster: rows(metadata.roster).slice(),
+    games: rows(metadata.games).slice(),
+    gamePlayers: rows(metadata.gamePlayers).slice(),
+    rounds: rows(metadata.rounds).slice(),
+  }
+  let nextGames = rows(source.games)
+  let nextRoster = rows(source.roster)
+
+  if (group === 'people') {
+    const personId = mutationPart(id, 'id', 'id')
+    nextRoster = nextRoster.filter((person) => person.id !== personId)
+    nextMetadata.roster = addCloudTombstone(nextMetadata, 'roster', { ...tombstone, id: personId })
+  } else if (group === 'games') {
+    const gameId = mutationPart(id, 'id', 'id')
+    nextGames = nextGames.filter((game) => game.id !== gameId)
+    nextMetadata.games = addCloudTombstone(nextMetadata, 'games', { ...tombstone, id: gameId })
+  } else if (group === 'gamePlayers' || group === 'rounds') {
+    const requestedGameId = mutationPart(id, 'gameId', 'game_id')
+    const requestedId = mutationPart(id, group === 'gamePlayers' ? 'personId' : 'id', group === 'gamePlayers' ? 'person_id' : 'id')
+    const records = []
+    nextGames = nextGames.map((game) => {
+      if (requestedGameId != null && game.id !== requestedGameId) return game
+      if (group === 'gamePlayers') {
+        const players = rows(game.players)
+        const matched = players.filter((player) => player.id === requestedId)
+        if (matched.length) records.push({ ...tombstone, gameId: game.id, id: requestedId })
+        return matched.length ? { ...game, players: players.filter((player) => player.id !== requestedId) } : game
+      }
+      const rounds = rows(game.rounds)
+      const matched = rounds.filter((round) => round.id === requestedId)
+      if (matched.length) records.push({ ...tombstone, gameId: game.id, id: requestedId })
+      return matched.length ? { ...game, rounds: rounds.filter((round) => round.id !== requestedId) } : game
+    })
+    if (requestedGameId != null && records.length === 0) records.push({ ...tombstone, gameId: requestedGameId, id: requestedId })
+    for (const record of records) nextMetadata[group] = addCloudTombstone(nextMetadata, group, record)
+  }
+
+  return setMetadata({ ...source, games: nextGames, roster: nextRoster }, nextMetadata)
+}
+
 function metadataRecords(metadata, key) {
   return rows(metadata?.[key])
 }

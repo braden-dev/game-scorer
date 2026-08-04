@@ -8,10 +8,11 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
     calls,
     from(table) {
       let rangeStart = 0
+      let writeData
       const response = () => ({
-        data: pages[table]
+        data: writeData ?? (pages[table]
           ? pages[table].find((page) => page.start === rangeStart)?.rows ?? []
-          : rows[table] ?? [],
+          : rows[table] ?? []),
         error: errors[table] ?? null,
       })
       const request = () => rejections[table]
@@ -39,6 +40,11 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
           calls.push({ table, operation: 'upsert', payload, options })
           return request()
         },
+        insert(payload) {
+          calls.push({ table, operation: 'insert', payload })
+          writeData = payload
+          return query
+        },
         update(payload) {
           calls.push({ table, operation: 'update', payload })
           return query
@@ -47,8 +53,101 @@ function fakeClient(rows = {}, errors = {}, rejections = {}, pages = {}) {
           calls.push({ table, operation: 'eq', column, value })
           return query
         },
+        is(column, value) {
+          calls.push({ table, operation: 'is', column, value })
+          return query
+        },
         then(resolve, reject) {
           return request().then(resolve, reject)
+        },
+      }
+      return query
+    },
+  }
+  return client
+}
+
+function mutableClient(initialRows = {}) {
+  const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
+  const calls = []
+  const keyFor = (table, row) => table === 'game_players'
+    ? `${row.game_id}\u0000${row.person_id}`
+    : row.id
+  const client = {
+    calls,
+    rows(table) { return tables[table] ?? [] },
+    from(table) {
+      let action = 'select'
+      let payload = null
+      const filters = []
+      const query = {
+        select(columns) {
+          calls.push({ table, operation: 'select', columns })
+          return query
+        },
+        order(column, options) {
+          calls.push({ table, operation: 'order', column, options })
+          return query
+        },
+        range(from, to) {
+          calls.push({ table, operation: 'range', from, to })
+          return query
+        },
+        gte(column, value) {
+          calls.push({ table, operation: 'gte', column, value })
+          filters.push((row) => row[column] >= value)
+          return query
+        },
+        eq(column, value) {
+          calls.push({ table, operation: 'eq', column, value })
+          filters.push((row) => row[column] === value)
+          return query
+        },
+        is(column, value) {
+          calls.push({ table, operation: 'is', column, value })
+          filters.push((row) => row[column] === value)
+          return query
+        },
+        upsert(rows, options) {
+          action = 'upsert'
+          payload = rows
+          calls.push({ table, operation: 'upsert', payload: rows, options })
+          return query
+        },
+        insert(rows) {
+          action = 'insert'
+          payload = rows
+          calls.push({ table, operation: 'insert', payload: rows })
+          return query
+        },
+        update(nextPayload) {
+          action = 'update'
+          payload = nextPayload
+          calls.push({ table, operation: 'update', payload: nextPayload })
+          return query
+        },
+        then(resolve, reject) {
+          try {
+            const tableRows = tables[table] ?? (tables[table] = [])
+            const matches = tableRows.filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
+            let data = matches
+            if (action === 'update') {
+              for (const row of matches) Object.assign(row, payload)
+            } else if (action === 'insert') {
+              tableRows.push(...payload.map((row) => ({ ...row })))
+              data = payload
+            } else if (action === 'upsert') {
+              data = payload.map((nextRow) => {
+                const existing = tableRows.find((row) => keyFor(table, row) === keyFor(table, nextRow))
+                if (existing) Object.assign(existing, nextRow)
+                else tableRows.push({ ...nextRow })
+                return nextRow
+              })
+            }
+            return Promise.resolve({ data, error: null }).then(resolve, reject)
+          } catch (error) {
+            return Promise.reject(error).then(resolve, reject)
+          }
         },
       }
       return query
@@ -79,7 +178,7 @@ test('fetchSnapshot returns all four tables, including tombstones', async () => 
   ])
 })
 
-test('upsertRows writes rows in foreign-key order with conflict keys', async () => {
+test('upsertRows writes rows in foreign-key order with primary keys', async () => {
   const client = fakeClient({ game_players: [{ game_id: 'g_one', person_id: 'p_one' }] })
   const rows = {
     people: [{ id: 'p_one', name: 'One', updated_at: '2026-01-01T00:00:00Z' }],
@@ -90,13 +189,17 @@ test('upsertRows writes rows in foreign-key order with conflict keys', async () 
 
   await createCloudApi(client).upsertRows(rows)
 
-  assert.deepEqual(client.calls.filter((call) => call.operation === 'upsert').map((call) => [
-    call.table, call.options?.onConflict, call.payload,
+  assert.deepEqual(client.calls.filter((call) => ['insert', 'update'].includes(call.operation)).map((call) => [
+    call.table, call.operation, call.payload,
   ]), [
-    ['people', 'id', rows.people],
-    ['games', 'id', rows.games],
-    ['game_players', 'game_id,person_id', rows.gamePlayers],
-    ['rounds', 'id', rows.rounds],
+    ['people', 'insert', rows.people],
+    ['games', 'insert', rows.games],
+    ['game_players', 'update', rows.gamePlayers[0]],
+    ['rounds', 'insert', rows.rounds],
+  ])
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'eq' && call.table === 'game_players').map((call) => [call.column, call.value]), [
+    ['game_id', 'g_one'], ['person_id', 'p_one'],
+    ['game_id', 'g_one'], ['person_id', 'p_one'],
   ])
 })
 
@@ -171,16 +274,17 @@ test('softDelete updates timestamps for a composite game player key', async () =
 
   await createCloudApi(client).softDelete('gamePlayers', { gameId: 'g_one', personId: 'p_one' }, updatedAt)
 
-  assert.deepEqual(client.calls.filter((call) => ['update', 'eq'].includes(call.operation)), [
-    {
-      table: 'game_players',
-      operation: 'update',
-      payload: { deleted_at: updatedAt, updated_at: updatedAt },
-    },
-    { table: 'game_players', operation: 'eq', column: 'game_id', value: 'g_one' },
-    { table: 'game_players', operation: 'eq', column: 'person_id', value: 'p_one' },
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'update'), [{
+    table: 'game_players',
+    operation: 'update',
+    payload: { deleted_at: updatedAt, updated_at: updatedAt },
+  }])
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'eq').map((call) => [call.column, call.value]), [
+    ['game_id', 'g_one'], ['person_id', 'p_one'],
+    ['game_id', 'g_one'], ['person_id', 'p_one'],
   ])
   assert.deepEqual(client.calls.filter((call) => call.operation === 'select'), [
+    { table: 'game_players', operation: 'select', columns: '*' },
     { table: 'game_players', operation: 'select', columns: 'game_id,person_id' },
   ])
 })
@@ -192,6 +296,63 @@ test('softDelete rejects when no row matched the requested key', async () => {
     createCloudApi(client).softDelete('rounds', 'missing', '2026-01-03T00:00:00.000Z'),
     /rounds.*no rows matched/,
   )
+})
+
+test('rejects a stale upsert without overwriting a newer remote row', async () => {
+  const client = mutableClient({ people: [{ id: 'p_one', name: 'Remote', updated_at: '2026-01-02T00:00:00.000Z' }] })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({ people: [{ id: 'p_one', name: 'Stale local', updated_at: '2026-01-01T00:00:00.000Z' }] }),
+    /people.*newer remote row/,
+  )
+  assert.equal(client.rows('people')[0].name, 'Remote')
+})
+
+test('rejects stale composite game-player upserts', async () => {
+  const client = mutableClient({
+    game_players: [{ game_id: 'g_one', person_id: 'p_one', name_snapshot: 'Remote', updated_at: '2026-01-02T00:00:00.000Z' }],
+  })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({
+      gamePlayers: [{ game_id: 'g_one', person_id: 'p_one', name_snapshot: 'Stale local', updated_at: '2026-01-01T00:00:00.000Z' }],
+    }),
+    /game_players.*newer remote row/,
+  )
+  assert.equal(client.rows('game_players')[0].name_snapshot, 'Remote')
+})
+
+test('rejects a stale soft delete without overwriting a newer remote row', async () => {
+  const client = mutableClient({
+    rounds: [{ id: 'r_one', game_id: 'g_one', updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null }],
+  })
+
+  await assert.rejects(
+    createCloudApi(client).softDelete('rounds', 'r_one', '2026-01-01T00:00:00.000Z'),
+    /rounds.*newer remote row/,
+  )
+  assert.equal(client.rows('rounds')[0].deleted_at, null)
+})
+
+test('rejects a stale composite game-player soft delete', async () => {
+  const client = mutableClient({
+    game_players: [{ game_id: 'g_one', person_id: 'p_one', updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null }],
+  })
+
+  await assert.rejects(
+    createCloudApi(client).softDelete('gamePlayers', { gameId: 'g_one', personId: 'p_one' }, '2026-01-01T00:00:00.000Z'),
+    /game_players.*newer remote row/,
+  )
+  assert.equal(client.rows('game_players')[0].deleted_at, null)
+})
+
+test('inserts new upsert rows when no remote row exists', async () => {
+  const client = mutableClient()
+
+  await createCloudApi(client).upsertRows({ people: [{ id: 'p_new', name: 'New', updated_at: '2026-01-01T00:00:00.000Z' }] })
+
+  assert.deepEqual(client.rows('people'), [{ id: 'p_new', name: 'New', updated_at: '2026-01-01T00:00:00.000Z' }])
+  assert.equal(client.calls.some((call) => call.operation === 'insert'), true)
 })
 
 test('Supabase errors name the table and provider message', async () => {
