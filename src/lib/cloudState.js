@@ -1,5 +1,7 @@
 const EPOCH_ISO = new Date(0).toISOString()
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
+const ROUND_POSITION_OVERRIDE = Symbol('gamescorer.roundPositionOverride')
+const PLAYER_POSITION_OVERRIDE = Symbol('gamescorer.playerPositionOverride')
 
 function rows(value) {
   return Array.isArray(value) ? value : []
@@ -458,7 +460,7 @@ export function toRemoteRows(state) {
       return {
         game_id: game.id,
         person_id: player.id,
-        seat_order: field(deleted, 'seatOrder', 'seat_order') ?? field(player, 'seatOrder', 'seat_order') ?? seatOrder,
+        seat_order: field(deleted, 'seatOrder', 'seat_order') ?? player[PLAYER_POSITION_OVERRIDE] ?? seatOrder,
         name_snapshot: field(deleted, 'nameSnapshot', 'name_snapshot') ?? field(player, 'nameSnapshot', 'name_snapshot') ?? player.name,
         updated_at: isoTimestamp(
           deleted ? field(deleted, 'updatedAt', 'updated_at') ?? field(deleted, 'deletedAt', 'deleted_at') : field(player, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
@@ -494,7 +496,7 @@ export function toRemoteRows(state) {
       return {
         id: round.id,
         game_id: game.id,
-        round_index: field(deleted, 'roundIndex', 'round_index') ?? field(round, 'roundIndex', 'round_index') ?? roundIndex,
+        round_index: field(deleted, 'roundIndex', 'round_index') ?? round[ROUND_POSITION_OVERRIDE] ?? roundIndex,
         entries: field(deleted, 'entries', 'entries') ?? round.entries ?? {},
         updated_at: isoTimestamp(
           deleted
@@ -545,19 +547,23 @@ export function toRemoteRowsDelta(state, previousState = {}, options = {}) {
       if (Array.isArray(options.roundIds)) {
         const roundIds = new Set(options.roundIds)
         scoped.rounds = rows(game.rounds)
-          .map((round, roundIndex) => roundIds.has(round.id) ? {
-            ...round,
-            roundIndex: field(round, 'roundIndex', 'round_index') ?? roundIndex,
-          } : null)
+          .map((round, roundIndex) => {
+            if (!roundIds.has(round.id)) return null
+            const scopedRound = { ...round }
+            Object.defineProperty(scopedRound, ROUND_POSITION_OVERRIDE, { value: roundIndex })
+            return scopedRound
+          })
           .filter(Boolean)
       }
       if (Array.isArray(options.playerIds)) {
         const playerIds = new Set(options.playerIds)
         scoped.players = rows(game.players)
-          .map((player, seatOrder) => playerIds.has(player.id) ? {
-            ...player,
-            seatOrder: field(player, 'seatOrder', 'seat_order') ?? seatOrder,
-          } : null)
+          .map((player, seatOrder) => {
+            if (!playerIds.has(player.id)) return null
+            const scopedPlayer = { ...player }
+            Object.defineProperty(scopedPlayer, PLAYER_POSITION_OVERRIDE, { value: seatOrder })
+            return scopedPlayer
+          })
           .filter(Boolean)
       }
       return scoped

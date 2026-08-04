@@ -680,6 +680,63 @@ test('middle player removal queues later players with shifted seat order', async
   })
 })
 
+test('synced earlier round deletion sends shifted rows with new versions', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const source = gameState()
+  source.activeGameId = 'g_mutations'
+  source.games[0].updatedAt = 1000
+  source.games[0].rounds = [
+    { id: 'r_one', updatedAt: 1100, entries: { p_one: { score: 100 }, p_two: { score: 200 } } },
+    { id: 'r_two', updatedAt: 1200, entries: { p_one: { score: 300 }, p_two: { score: 400 } } },
+    { id: 'r_three', updatedAt: 1300, entries: { p_one: { score: 500 }, p_two: { score: 600 } } },
+  ]
+  const synced = fromRemoteRows(toRemoteRows(source), source.activeGameId)
+  prepareStorage(source)
+  resetTestState()
+  globalThis.__scorebookTestSync.hydratedState = synced
+
+  globalThis.__scorebookTestReact.begin()
+  App()
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({ ...game, rounds: game.rounds.slice(1) })
+
+  const rows = globalThis.__scorebookTestSync.mutations[0].payload.rows
+  assert.deepEqual(rows.rounds.map(({ id, round_index }) => [id, round_index]), [['r_two', 0], ['r_three', 1]])
+  assert.ok(Date.parse(rows.rounds.find((round) => round.id === 'r_two').updated_at) > 1200)
+  assert.ok(Date.parse(rows.rounds.find((round) => round.id === 'r_three').updated_at) > 1300)
+})
+
+test('synced earlier player removal sends shifted seats with new versions', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const source = gameState()
+  source.activeGameId = 'g_mutations'
+  source.roster = [...source.roster, { id: 'p_three', name: 'Three' }]
+  source.games[0].updatedAt = 1000
+  source.games[0].players = [
+    { id: 'p_one', name: 'One', updatedAt: 1100 },
+    { id: 'p_two', name: 'Two', updatedAt: 1200 },
+    { id: 'p_three', name: 'Three', updatedAt: 1300 },
+  ]
+  const synced = fromRemoteRows(toRemoteRows(source), source.activeGameId)
+  prepareStorage(source)
+  resetTestState()
+  globalThis.__scorebookTestSync.hydratedState = synced
+
+  globalThis.__scorebookTestReact.begin()
+  App()
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({ ...game, players: game.players.slice(1) })
+
+  const rows = globalThis.__scorebookTestSync.mutations[0].payload.rows
+  assert.deepEqual(rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [['p_two', 0], ['p_three', 1]])
+  assert.ok(Date.parse(rows.gamePlayers.find((player) => player.person_id === 'p_two').updated_at) > 1200)
+  assert.ok(Date.parse(rows.gamePlayers.find((player) => player.person_id === 'p_three').updated_at) > 1300)
+})
+
 test('invalid new-game routes render Home instead of dereferencing an unknown game', async () => {
   const App = await loadComponent('src/App.jsx')
   prepareStorage({ games: [], roster: [], activeGameId: null })

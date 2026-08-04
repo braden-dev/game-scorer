@@ -280,9 +280,12 @@ export default function App() {
     const gameTimestamp = includeGame
       ? Math.max(roundTimestamp, (Number(previousGame?.updatedAt) || 0) + 1)
       : previousGame?.updatedAt ?? updated.updatedAt
-    const rounds = updated.rounds.map((round) => {
-      const previousRound = previousGame?.rounds?.find((candidate) => candidate.id === round.id)
-      if (previousRound && comparableRecord(previousRound) === comparableRecord(round)) return round
+    const rounds = updated.rounds.map((round, roundIndex) => {
+      const previousRoundIndex = previousGame?.rounds?.findIndex((candidate) => candidate.id === round.id) ?? -1
+      const previousRound = previousRoundIndex >= 0 ? previousGame.rounds[previousRoundIndex] : null
+      if (previousRound
+        && previousRoundIndex === roundIndex
+        && comparableRecord(previousRound) === comparableRecord(round)) return round
       return {
         ...round,
         updatedAt: Math.max(
@@ -292,8 +295,24 @@ export default function App() {
         ),
       }
     })
+    const players = updated.players.map((player, seatOrder) => {
+      const previousPlayerIndex = previousGame?.players?.findIndex((candidate) => candidate.id === player.id) ?? -1
+      const previousPlayer = previousPlayerIndex >= 0 ? previousGame.players[previousPlayerIndex] : null
+      if (previousPlayer
+        && previousPlayerIndex === seatOrder
+        && comparableRecord(previousPlayer) === comparableRecord(player)) return player
+      return {
+        ...player,
+        updatedAt: Math.max(
+          roundTimestamp,
+          (Number(previousPlayer?.updatedAt) || 0) + 1,
+          Number(player.updatedAt) || 0,
+        ),
+      }
+    })
     const next = {
       ...updated,
+      players,
       rounds,
       updatedAt: gameTimestamp,
       finishedAt: status.finished ? (updated.finishedAt || previousGame?.finishedAt || gameTimestamp) : null,

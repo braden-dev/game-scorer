@@ -211,6 +211,49 @@ test('scoped deltas preserve shifted positions after removing earlier children',
   assert.deepEqual(rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [['p_three', 1]])
 })
 
+test('full export recomputes positions after deleting earlier synced children', () => {
+  const source = {
+    activeGameId: 'g_synced_positions',
+    roster: [
+      { id: 'p_one', name: 'One' },
+      { id: 'p_two', name: 'Two' },
+      { id: 'p_three', name: 'Three' },
+    ],
+    games: [{
+      id: 'g_synced_positions',
+      gameId: 'farkle',
+      createdAt: 1,
+      updatedAt: 1000,
+      players: [
+        { id: 'p_one', name: 'One', updatedAt: 1100 },
+        { id: 'p_two', name: 'Two', updatedAt: 1200 },
+        { id: 'p_three', name: 'Three', updatedAt: 1300 },
+      ],
+      settings: {},
+      rounds: [
+        { id: 'r_one', updatedAt: 1400, entries: {} },
+        { id: 'r_two', updatedAt: 1500, entries: {} },
+        { id: 'r_three', updatedAt: 1600, entries: {} },
+      ],
+      finishedAt: null,
+    }],
+  }
+  const synced = fromRemoteRows(toRemoteRows(source), source.activeGameId)
+  const shifted = {
+    ...synced,
+    games: [{
+      ...synced.games[0],
+      players: synced.games[0].players.slice(1),
+      rounds: synced.games[0].rounds.slice(1),
+    }],
+  }
+
+  const rows = toRemoteRows(shifted)
+
+  assert.deepEqual(rows.rounds.map(({ id, round_index }) => [id, round_index]), [['r_two', 0], ['r_three', 1]])
+  assert.deepEqual(rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [['p_two', 0], ['p_three', 1]])
+})
+
 test('reconstructs nested state, resolves names, converts timestamps, and filters tombstones', () => {
   const state = fromRemoteRows({
     people: [
@@ -447,7 +490,7 @@ test('round-trips player versions, player tombstones, and standalone person crea
   })
   assert.deepEqual(rows.gamePlayers, [
     {
-      game_id: 'g_one', person_id: 'p_player', seat_order: 3, name_snapshot: 'Original',
+      game_id: 'g_one', person_id: 'p_player', seat_order: 0, name_snapshot: 'Original',
       updated_at: '1970-01-01T00:00:00.250Z', deleted_at: null,
     },
     {

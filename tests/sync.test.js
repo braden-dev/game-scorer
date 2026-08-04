@@ -481,7 +481,7 @@ test('preserves player row versions and tombstones through cache persistence', (
   saveSyncStore({ cache: state, outbox: [], lastSyncAt: null, lastError: null, initialMigrationCompleted: false }, storage)
   const rows = toRemoteRows(loadSyncStore(storage).cache)
   assert.equal(rows.gamePlayers[0].updated_at, '1970-01-01T00:00:00.250Z')
-  assert.equal(rows.gamePlayers[0].seat_order, 3)
+  assert.equal(rows.gamePlayers[0].seat_order, 0)
   assert.equal(rows.gamePlayers[0].name_snapshot, 'Original Live')
   assert.equal(rows.gamePlayers[1].deleted_at, '1970-01-01T00:00:00.300Z')
   assert.equal(rows.gamePlayers[1].updated_at, '1970-01-01T00:00:00.300Z')
