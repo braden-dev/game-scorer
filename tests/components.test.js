@@ -188,3 +188,33 @@ test('GameView safely renders malformed remote settings with defaults', async ()
     }, `target=${String(target)}`)
   }
 })
+
+test('GameView lists every tied rank-one winner in the winner banner', async () => {
+  const GameView = await loadGameView()
+  const tree = GameView({
+    game: {
+      id: 'g_tied_winners',
+      gameId: 'farkle',
+      players: [
+        { id: 'p_one', name: 'One' },
+        { id: 'p_two', name: 'Two' },
+        { id: 'p_three', name: 'Three' },
+      ],
+      settings: { target: 100, opening: 0 },
+      rounds: [{ entries: {
+        p_one: { score: 100 },
+        p_two: { score: 100 },
+        p_three: { score: 50 },
+      } }],
+      finishedAt: null,
+    },
+    roster: [],
+    onUpdate: () => {},
+    onBack: () => {},
+    onRematch: () => {},
+    onAddToRoster: () => ({ id: 'p_new', name: 'New' }),
+  })
+
+  const banner = findElement(tree, (element) => element.props?.className === 'winner-banner')
+  assert.match(textOf(banner), /One and Two win!/)
+})

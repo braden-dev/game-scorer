@@ -67,7 +67,11 @@ export default function GameView({ game: rawGame, roster, onUpdate, onBack, onRe
     onUpdate({ ...game, players, rounds })
   }
 
-  const winner = status.winnerId ? game.players.find((p) => p.id === status.winnerId) : null
+  const winners = standings.filter((row) => row.rank === 1)
+  const winnerNames = winners.map((row) => row.player.name)
+  const winnerLabel = winnerNames.length === 1
+    ? `${winnerNames[0]} wins!`
+    : `${winnerNames.slice(0, -1).join(', ')} and ${winnerNames.at(-1)} win!`
 
   return (
     <div className="gameview" style={{ '--accent': def.accent }}>
@@ -89,12 +93,12 @@ export default function GameView({ game: rawGame, roster, onUpdate, onBack, onRe
         </div>
       </header>
 
-      {status.finished && winner && (
+      {status.finished && winners.length > 0 && (
         <div className="winner-banner">
           <span className="trophy">🏆</span>
           <div>
-            <strong>{winner.name} wins!</strong>
-            <span>{totals[winner.id].total.toLocaleString()} points</span>
+            <strong>{winnerLabel}</strong>
+            <span>{totals[winners[0].player.id].total.toLocaleString()} points</span>
           </div>
           <button type="button" className="btn ghost" onClick={onRematch}>Rematch</button>
         </div>

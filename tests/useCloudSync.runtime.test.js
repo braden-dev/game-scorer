@@ -255,6 +255,55 @@ test('mounts the real hook, follows navigation during deferred sync, deduplicate
   }
 })
 
+test('preserves existing tombstone metadata through an incremental sync merge', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const initialRows = {
+    people: [{
+      id: 'p_deleted', name: 'Deleted',
+      updated_at: '2026-01-02T00:00:00.000Z', deleted_at: '2026-01-02T00:00:01.000Z',
+    }],
+    games: [], gamePlayers: [], rounds: [],
+  }
+  let incrementalCalls = 0
+  const api = {
+    fetchSnapshot: async () => initialRows,
+    fetchRowsUpdatedSince: async () => {
+      incrementalCalls += 1
+      return {
+        people: [{ id: 'p_new', name: 'New', updated_at: '2026-01-03T00:00:00.000Z' }],
+        games: [], gamePlayers: [], rounds: [],
+      }
+    },
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => { await observed.hook.syncNow() })
+
+    assert.equal(incrementalCalls, 1)
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(stored.cache[Symbol.for('gamescorer.cloudMetadata')].roster[0].id, 'p_deleted')
+    assert.equal(
+      stored.cache[Symbol.for('gamescorer.cloudMetadata')].roster[0].updatedAt,
+      Date.parse('2026-01-02T00:00:00.000Z'),
+    )
+    assert.deepEqual(stored.cache.roster.map(({ id }) => id), ['p_new'])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('replays an earlier-round deletion before shifted live rows against the unique-position client', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

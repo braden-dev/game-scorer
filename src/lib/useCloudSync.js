@@ -309,7 +309,10 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         : await apiRef.current.fetchRowsUpdatedSince(store.lastSyncAt)
       const latestStore = storeRef.current ?? store
       const latestActiveGameId = activeGameIdForSync(stateRef, latestStore)
-      const latestCache = applyPendingSoftDeletes({ ...latestStore.cache, activeGameId: latestActiveGameId }, latestStore.outbox)
+      const latestCache = applyPendingSoftDeletes(
+        copyCloudMetadata({ ...latestStore.cache, activeGameId: latestActiveGameId }, latestStore.cache),
+        latestStore.outbox,
+      )
       const remoteState = fromRemoteRows(rows, latestActiveGameId)
       const mergedState = mergeRemoteState(latestCache, remoteState, previousSyncAt)
       const reconciledState = initial || !latestStore.lastSyncAt
