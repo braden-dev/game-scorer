@@ -63,29 +63,91 @@ export function cloudConfigured() { return true }
 `
 
 const fakeSync = `
-const state = globalThis.__scorebookIntegrationSync ??= { outbox: [] }
+const STORE_KEY = 'gamescorer.cloud.v1'
+const state = globalThis.__scorebookIntegrationSync ??= { outbox: [], status: 'synced', lastError: null }
+function readStore() {
+  return JSON.parse(localStorage.getItem(STORE_KEY) ?? '{}')
+}
+function persistStore(updates = {}) {
+  const current = readStore()
+  localStorage.setItem(STORE_KEY, JSON.stringify({
+    ...current,
+    ...updates,
+    outbox: state.outbox,
+    lastError: state.lastError,
+  }))
+}
 const api = globalThis.__scorebookIntegrationCloudApi ??= {
   mutations: [],
-  async fetchSnapshot() { return { people: [], games: [], gamePlayers: [], rounds: [] } },
-  async upsertRows(rows, mutation) { this.mutations.push({ rows, initialMigration: mutation.initialMigration }) },
+  failFetch: false,
+  failUpsert: false,
+  async fetchSnapshot() {
+    if (this.failFetch) throw new Error('snapshot unavailable')
+    return { people: [], games: [], gamePlayers: [], rounds: [] }
+  },
+  async upsertRows(rows, mutation) {
+    if (this.failUpsert) throw new Error('migration upload unavailable')
+    this.mutations.push({ rows, initialMigration: mutation.initialMigration })
+  },
 }
 export const CONFLICT_MESSAGE = 'This was changed on another device. The shared version is now shown.'
 export function useCloudSync() {
+  const syncNow = async (options = {}) => {
+    if (options.initial) {
+      try {
+        await api.fetchSnapshot()
+      } catch (error) {
+        state.status = 'error'
+        state.lastError = error.message
+        persistStore()
+        return
+      }
+      state.status = 'synced'
+      state.lastError = null
+      persistStore({
+        cache: { games: [], roster: [], activeGameId: null },
+        reconciledCache: { games: [], roster: [], activeGameId: null },
+        lastSyncAt: new Date().toISOString(),
+      })
+    }
+    const mutation = state.outbox[0]
+    if (!mutation) {
+      state.status = 'synced'
+      state.lastError = null
+      persistStore()
+      return
+    }
+    try {
+      await api.upsertRows(mutation.payload.rows, mutation)
+      state.outbox.shift()
+      state.status = 'synced'
+      state.lastError = null
+    } catch (error) {
+      state.status = 'error'
+      state.lastError = error.message
+    }
+    persistStore()
+  }
+  state.syncNow = syncNow
   return {
-    status: 'synced',
+    status: state.status,
     pendingCount: state.outbox.length,
-    error: null,
-    async syncNow(options = {}) {
-      if (options.initial) await api.fetchSnapshot()
-      const mutation = state.outbox.shift()
-      if (mutation) await api.upsertRows(mutation.payload.rows, mutation)
+    error: state.lastError,
+    syncNow,
+    enqueueStateMutation(mutation) {
+      state.outbox.push(mutation)
+      state.status = 'pending'
+      persistStore()
+      return mutation
     },
-    enqueueStateMutation(mutation) { state.outbox.push(mutation); return mutation },
     updateSyncStore(update) {
-      const current = JSON.parse(localStorage.getItem('gamescorer.cloud.v1') ?? '{}')
+      const current = readStore()
       localStorage.setItem('gamescorer.cloud.v1', JSON.stringify({ ...current, ...update }))
     },
-    cancelSyncMutations() {},
+    cancelSyncMutations(predicate) {
+      state.outbox = state.outbox.filter((mutation) => !predicate?.(mutation))
+      persistStore()
+    },
   }
 }
 `
@@ -186,7 +248,7 @@ test('does not offer migration for a device that started without local data', ()
   }), true)
 })
 
-test('automatically migrates local history after startup without rendering a migration prompt', async () => {
+test('aborts initial migration when the cloud snapshot fails, then retries without remounting', async () => {
   const App = await loadAppForIntegrationTest()
   const storage = new MemoryStorage()
   saveState({
@@ -214,15 +276,100 @@ test('automatically migrates local history after startup without rendering a mig
   }
   globalThis.__scorebookIntegrationReactControl.reset()
   globalThis.__scorebookIntegrationSync.outbox = []
+  globalThis.__scorebookIntegrationSync.status = 'synced'
+  globalThis.__scorebookIntegrationSync.lastError = null
   globalThis.__scorebookIntegrationCloudApi.mutations = []
+  globalThis.__scorebookIntegrationCloudApi.failFetch = true
+  globalThis.__scorebookIntegrationCloudApi.failUpsert = true
 
   globalThis.__scorebookIntegrationReactControl.begin()
   const appTree = App()
   await globalThis.__scorebookIntegrationReactControl.flushEffects()
   await new Promise((resolve) => setImmediate(resolve))
 
-  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations.map(({ initialMigration }) => initialMigration), [true])
+  let store = loadSyncStore()
+  assert.equal(store.initialMigrationCompleted, false)
+  assert.equal(store.lastError, 'snapshot unavailable')
+  assert.deepEqual(store.outbox, [])
+  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
   assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
+
+  globalThis.__scorebookIntegrationCloudApi.failFetch = false
+  globalThis.__scorebookIntegrationCloudApi.failUpsert = false
+  await globalThis.__scorebookIntegrationSync.syncNow({ initial: true })
+  globalThis.__scorebookIntegrationReactControl.begin()
+  App()
+  await globalThis.__scorebookIntegrationReactControl.flushEffects()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  store = loadSyncStore()
+  assert.equal(store.initialMigrationCompleted, true)
+  assert.equal(store.outbox.length, 0)
+  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations.map(({ initialMigration }) => initialMigration), [true])
+})
+
+test('persists a failed migration for retry and completes only after replay removes it', async () => {
+  const App = await loadAppForIntegrationTest()
+  const storage = new MemoryStorage()
+  saveState({
+    activeGameId: null,
+    roster: [{ id: 'p_local', name: 'Local Player' }],
+    games: [{
+      id: 'g_local',
+      gameId: 'farkle',
+      createdAt: 1,
+      updatedAt: 2,
+      players: [{ id: 'p_local', name: 'Local Player' }],
+      settings: {},
+      rounds: [],
+      finishedAt: null,
+    }],
+  }, storage)
+  storage.setItem('gamescorer.cloud.v1', JSON.stringify({ initialMigrationCompleted: false, outbox: [] }))
+  globalThis.localStorage = storage
+  globalThis.window = {
+    location: { pathname: '/' },
+    matchMedia: () => ({ matches: false }),
+    navigator: { standalone: false, userAgent: 'test', maxTouchPoints: 0 },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+  globalThis.__scorebookIntegrationReactControl.reset()
+  globalThis.__scorebookIntegrationSync.outbox = []
+  globalThis.__scorebookIntegrationSync.status = 'synced'
+  globalThis.__scorebookIntegrationSync.lastError = null
+  globalThis.__scorebookIntegrationCloudApi.mutations = []
+  globalThis.__scorebookIntegrationCloudApi.failFetch = false
+  globalThis.__scorebookIntegrationCloudApi.failUpsert = true
+
+  globalThis.__scorebookIntegrationReactControl.begin()
+  const appTree = App()
+  await globalThis.__scorebookIntegrationReactControl.flushEffects()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  let store = loadSyncStore()
+  assert.equal(store.initialMigrationCompleted, false)
+  assert.equal(store.outbox.length, 1)
+  assert.equal(store.outbox[0].initialMigration, true)
+  assert.equal(store.lastError, 'migration upload unavailable')
+  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations, [])
+  assert.equal(findElement(appTree, (element) => element.type?.name === 'MigrationPanel'), null)
+
+  globalThis.__scorebookIntegrationCloudApi.failUpsert = false
+  await globalThis.__scorebookIntegrationSync.syncNow()
+  store = loadSyncStore()
+  assert.equal(store.outbox.length, 0)
+  assert.equal(store.lastError, null)
+  assert.equal(store.initialMigrationCompleted, false)
+
+  globalThis.__scorebookIntegrationReactControl.begin()
+  App()
+  await globalThis.__scorebookIntegrationReactControl.flushEffects()
+  await new Promise((resolve) => setImmediate(resolve))
+
+  store = loadSyncStore()
+  assert.equal(store.initialMigrationCompleted, true)
+  assert.deepEqual(globalThis.__scorebookIntegrationCloudApi.mutations.map(({ initialMigration }) => initialMigration), [true])
 })
 
 test('does not expose a cloud backup before the first successful sync', () => {
