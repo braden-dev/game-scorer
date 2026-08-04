@@ -159,6 +159,25 @@ function childMetadata(metadata, key, gameId) {
   return metadataRecords(metadata, key).filter((record) => record.gameId === gameId)
 }
 
+function metadataOrder(record, camelName, snakeName) {
+  const value = recordField(record, camelName, snakeName)
+  if (value === null || value === undefined || value === '') return null
+  const order = Number(value)
+  return Number.isFinite(order) ? order : null
+}
+
+function sortByMetadata(records, camelName, snakeName) {
+  return records
+    .map((record, index) => ({ record, index, order: metadataOrder(record, camelName, snakeName) }))
+    .sort((left, right) => {
+      if (left.order === null && right.order === null) return left.index - right.index
+      if (left.order === null) return 1
+      if (right.order === null) return -1
+      return left.order - right.order || left.index - right.index
+    })
+    .map(({ record }) => record)
+}
+
 function withVersion(record, updatedAt, createdAt = undefined) {
   Object.defineProperty(record, 'updatedAt', {
     value: updatedAt,
@@ -347,6 +366,8 @@ function mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetad
     delete visible.gameId
     return visible
   })
+  merged.players = sortByMetadata(merged.players, 'seatOrder', 'seat_order')
+  merged.rounds = sortByMetadata(merged.rounds, 'roundIndex', 'round_index')
   return merged
 }
 

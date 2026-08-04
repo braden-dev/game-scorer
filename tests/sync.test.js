@@ -267,30 +267,30 @@ test('applies child-only updates and deletions when the parent game row is absen
     ],
     games: [],
     gamePlayers: [
-      { game_id: 'g_incremental', person_id: 'p_one', seat_order: 0, name_snapshot: 'New One', updated_at: '1970-01-01T00:00:00.200Z' },
-      { game_id: 'g_incremental', person_id: 'p_new', seat_order: 3, name_snapshot: 'Original New', updated_at: '1970-01-01T00:00:00.250Z' },
+      { game_id: 'g_incremental', person_id: 'p_one', seat_order: 3, name_snapshot: 'New One', updated_at: '1970-01-01T00:00:00.200Z' },
+      { game_id: 'g_incremental', person_id: 'p_new', seat_order: 0, name_snapshot: 'Original New', updated_at: '1970-01-01T00:00:00.250Z' },
     ],
     rounds: [
-      { id: 'r_one', game_id: 'g_incremental', round_index: 0, entries: { p_one: { score: 2 } }, updated_at: '1970-01-01T00:00:00.200Z' },
-      { id: 'r_new', game_id: 'g_incremental', round_index: 4, entries: { p_one: { score: 4 } }, updated_at: '1970-01-01T00:00:00.250Z' },
+      { id: 'r_one', game_id: 'g_incremental', round_index: 3, entries: { p_one: { score: 2 } }, updated_at: '1970-01-01T00:00:00.200Z' },
+      { id: 'r_new', game_id: 'g_incremental', round_index: 0, entries: { p_one: { score: 4 } }, updated_at: '1970-01-01T00:00:00.250Z' },
     ],
   })
   const updated = mergeRemoteState(local, update, 200)
   assert.deepEqual(updated.games[0].players, [
-    { id: 'p_one', name: 'One' },
     { id: 'p_new', name: 'Current New' },
+    { id: 'p_one', name: 'One' },
   ])
   assert.deepEqual(updated.games[0].rounds, [
-    { id: 'r_one', entries: { p_one: { score: 2 } } },
     { id: 'r_new', entries: { p_one: { score: 4 } } },
+    { id: 'r_one', entries: { p_one: { score: 2 } } },
   ])
   const uploaded = toRemoteRows(updated)
   assert.deepEqual(uploaded.gamePlayers.find((player) => player.person_id === 'p_new'), {
-    game_id: 'g_incremental', person_id: 'p_new', seat_order: 3, name_snapshot: 'Original New',
+    game_id: 'g_incremental', person_id: 'p_new', seat_order: 0, name_snapshot: 'Original New',
     updated_at: '1970-01-01T00:00:00.250Z', deleted_at: null,
   })
   assert.deepEqual(uploaded.rounds.find((round) => round.id === 'r_new'), {
-    id: 'r_new', game_id: 'g_incremental', round_index: 4,
+    id: 'r_new', game_id: 'g_incremental', round_index: 0,
     entries: { p_one: { score: 4 } }, updated_at: '1970-01-01T00:00:00.250Z', deleted_at: null,
   })
 
