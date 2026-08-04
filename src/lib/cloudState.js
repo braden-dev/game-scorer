@@ -544,11 +544,21 @@ export function toRemoteRowsDelta(state, previousState = {}, options = {}) {
       const scoped = { ...game }
       if (Array.isArray(options.roundIds)) {
         const roundIds = new Set(options.roundIds)
-        scoped.rounds = rows(game.rounds).filter((round) => roundIds.has(round.id))
+        scoped.rounds = rows(game.rounds)
+          .map((round, roundIndex) => roundIds.has(round.id) ? {
+            ...round,
+            roundIndex: field(round, 'roundIndex', 'round_index') ?? roundIndex,
+          } : null)
+          .filter(Boolean)
       }
       if (Array.isArray(options.playerIds)) {
         const playerIds = new Set(options.playerIds)
-        scoped.players = rows(game.players).filter((player) => playerIds.has(player.id))
+        scoped.players = rows(game.players)
+          .map((player, seatOrder) => playerIds.has(player.id) ? {
+            ...player,
+            seatOrder: field(player, 'seatOrder', 'seat_order') ?? seatOrder,
+          } : null)
+          .filter(Boolean)
       }
       return scoped
     })

@@ -636,6 +636,50 @@ test('GameView player removal reaches App and queues a join-row tombstone', asyn
   })
 })
 
+test('middle player removal queues later players with shifted seat order', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.roster = [...state.roster, { id: 'p_three', name: 'Three' }]
+  state.games[0].players = [
+    state.games[0].players[0],
+    state.games[0].players[1],
+    { id: 'p_three', name: 'Three' },
+  ]
+  state.games[0].rounds = [{
+    id: 'r_players',
+    entries: {
+      p_one: { score: 500 },
+      p_two: { score: 700 },
+      p_three: { score: 300 },
+    },
+  }]
+  prepareStorage(state)
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  globalThis.__scorebookTestReact.reset()
+  globalThis.__scorebookTestReact.begin()
+  let gameTree = appContent(appTree).type(appContent(appTree).props)
+  findElement(gameTree, (element) => element.props?.['aria-label'] === 'Players').props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  gameTree = appContent(appTree).type(appContent(appTree).props)
+  findElement(gameTree, (element) => element.props?.['aria-label'] === 'Remove Two').props.onClick()
+
+  const mutations = globalThis.__scorebookTestSync.mutations
+  assert.deepEqual(
+    mutations[0].payload.rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]),
+    [['p_three', 1]],
+  )
+  assert.deepEqual(mutations[1].payload, {
+    gameId: 'g_mutations',
+    personId: 'p_two',
+    seatOrder: 1,
+    nameSnapshot: 'Two',
+  })
+})
+
 test('invalid new-game routes render Home instead of dereferencing an unknown game', async () => {
   const App = await loadComponent('src/App.jsx')
   prepareStorage({ games: [], roster: [], activeGameId: null })

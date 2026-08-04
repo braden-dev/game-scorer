@@ -133,6 +133,84 @@ test('delta rows exclude unchanged local history from later normal mutations', (
   assert.deepEqual(rows.gamePlayers.map((player) => player.game_id), ['g_new'])
 })
 
+test('scoped deltas preserve original round and player positions', () => {
+  const previousGame = {
+    id: 'g_positions',
+    gameId: 'farkle',
+    createdAt: 1,
+    updatedAt: 100,
+    players: [
+      { id: 'p_one', name: 'One' },
+      { id: 'p_two', name: 'Two' },
+      { id: 'p_three', name: 'Three' },
+    ],
+    settings: {},
+    rounds: [
+      { id: 'r_one', entries: {} },
+      { id: 'r_two', entries: { p_one: { score: 2 } } },
+      { id: 'r_three', entries: {} },
+    ],
+    finishedAt: null,
+  }
+  const nextGame = {
+    ...previousGame,
+    rounds: [
+      previousGame.rounds[0],
+      { ...previousGame.rounds[1], entries: { p_one: { score: 22 } } },
+      previousGame.rounds[2],
+    ],
+    players: [
+      previousGame.players[0],
+      previousGame.players[1],
+      { ...previousGame.players[2], name: 'Three Updated' },
+    ],
+  }
+
+  const rows = toRemoteRowsDelta(
+    { roster: [], games: [nextGame] },
+    { roster: [], games: [previousGame] },
+    { gameId: 'g_positions', includeGame: false, roundIds: ['r_two'], playerIds: ['p_three'] },
+  )
+
+  assert.deepEqual(rows.rounds.map(({ id, round_index }) => [id, round_index]), [['r_two', 1]])
+  assert.deepEqual(rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [['p_three', 2]])
+})
+
+test('scoped deltas preserve shifted positions after removing earlier children', () => {
+  const previousGame = {
+    id: 'g_shifted_positions',
+    gameId: 'farkle',
+    createdAt: 1,
+    updatedAt: 100,
+    players: [
+      { id: 'p_one', name: 'One' },
+      { id: 'p_two', name: 'Two' },
+      { id: 'p_three', name: 'Three' },
+    ],
+    settings: {},
+    rounds: [
+      { id: 'r_one', entries: {} },
+      { id: 'r_two', entries: {} },
+      { id: 'r_three', entries: {} },
+    ],
+    finishedAt: null,
+  }
+  const nextGame = {
+    ...previousGame,
+    players: [previousGame.players[0], previousGame.players[2]],
+    rounds: [previousGame.rounds[0], previousGame.rounds[2]],
+  }
+
+  const rows = toRemoteRowsDelta(
+    { roster: [], games: [nextGame] },
+    { roster: [], games: [previousGame] },
+    { gameId: 'g_shifted_positions', includeGame: false, roundIds: ['r_three'], playerIds: ['p_three'] },
+  )
+
+  assert.deepEqual(rows.rounds.map(({ id, round_index }) => [id, round_index]), [['r_three', 1]])
+  assert.deepEqual(rows.gamePlayers.map(({ person_id, seat_order }) => [person_id, seat_order]), [['p_three', 1]])
+})
+
 test('reconstructs nested state, resolves names, converts timestamps, and filters tombstones', () => {
   const state = fromRemoteRows({
     people: [

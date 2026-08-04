@@ -34,12 +34,15 @@ function comparableRecord(value) {
   return JSON.stringify(copy)
 }
 
-function changedRecordIds(previousRecords = [], nextRecords = []) {
-  const previousById = new Map(previousRecords.map((record) => [record.id, record]))
+function changedRecordIds(previousRecords = [], nextRecords = [], includePosition = false) {
+  const previousById = new Map(previousRecords.map((record, index) => [record.id, { record, index }]))
   return nextRecords
-    .filter((record) => {
-      const previous = previousById.get(record.id)
-      return !previous || comparableRecord(previous) !== comparableRecord(record)
+    .filter((record, index) => {
+      const previousEntry = previousById.get(record.id)
+      const previous = previousEntry?.record
+      return !previous
+        || comparableRecord(previous) !== comparableRecord(record)
+        || (includePosition && previousEntry.index !== index)
     })
     .map((record) => record.id)
 }
@@ -295,8 +298,8 @@ export default function App() {
       updatedAt: gameTimestamp,
       finishedAt: status.finished ? (updated.finishedAt || previousGame?.finishedAt || gameTimestamp) : null,
     }
-    const changedRoundIds = changedRecordIds(previousGame?.rounds ?? [], next.rounds)
-    const changedPlayerIds = changedRecordIds(previousGame?.players ?? [], next.players)
+    const changedRoundIds = changedRecordIds(previousGame?.rounds ?? [], next.rounds, true)
+    const changedPlayerIds = changedRecordIds(previousGame?.players ?? [], next.players, true)
     applyMutation(
       (prev) => ({
         ...prev,
