@@ -170,6 +170,26 @@ test('round-trips metadata-only person and game tombstones without duplicating l
   assert.deepEqual(toRemoteRows(fromRemoteRows(rows)).games, sourceRows.games)
 })
 
+test('preserves a reconstructed person created_at through local deletion tombstone round-trip', () => {
+  const deletedAt = '2026-01-04T00:00:00.000Z'
+  const state = fromRemoteRows({
+    people: [{
+      id: 'p_removed', name: 'Removed', normalized_name: 'removed',
+      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
+    }],
+    games: [], gamePlayers: [], rounds: [],
+  })
+
+  const deleted = applyCloudSoftDelete(state, 'people', 'p_removed', deletedAt)
+  const expected = {
+    id: 'p_removed', name: 'Removed', normalized_name: 'removed',
+    created_at: '2026-01-01T00:00:00.000Z', updated_at: deletedAt, deleted_at: deletedAt,
+  }
+
+  assert.deepEqual(toRemoteRows(deleted).people, [expected])
+  assert.deepEqual(toRemoteRows(fromRemoteRows(toRemoteRows(deleted))).people, [expected])
+})
+
 test('emits preserved local round data when recording a parent-keyed tombstone', () => {
   const deletedAt = '2026-01-03T00:00:02.000Z'
   const cache = {
