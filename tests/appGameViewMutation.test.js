@@ -217,7 +217,7 @@ function resetTestState() {
   globalThis.__scorebookTestSync.hydratedState = null
 }
 
-test('App round deletion queues the updated game before the round tombstone', async () => {
+test('App round deletion queues the round tombstone before the updated game', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()
   prepareStorage(state)
@@ -242,16 +242,16 @@ test('App round deletion queues the updated game before the round tombstone', as
 
   const mutations = globalThis.__scorebookTestSync.mutations
   assert.deepEqual(mutations.map(({ entity, operation }) => ({ entity, operation })), [
-    { entity: 'scorebook', operation: 'upsert' },
     { entity: 'rounds', operation: 'softDelete' },
+    { entity: 'scorebook', operation: 'upsert' },
   ])
-  assert.equal(mutations[0].payload.rows.games[0].id, 'g_mutations')
-  assert.equal(mutations[0].payload.rows.games[0].finished_at, null)
-  assert.deepEqual(mutations[1].payload, {
+  assert.deepEqual(mutations[0].payload, {
     gameId: 'g_mutations',
     roundIndex: 0,
     entries: { p_one: { score: 500 }, p_two: { score: 700 } },
   })
+  assert.equal(mutations[1].payload.rows.games[0].id, 'g_mutations')
+  assert.equal(mutations[1].payload.rows.games[0].finished_at, null)
 })
 
 test('round deletion asks for confirmation and explains the brief Undo window', async () => {
@@ -702,7 +702,12 @@ test('synced earlier round deletion sends shifted rows with new versions', async
   const game = initial.props.content.props.game
   initial.props.content.props.onUpdate({ ...game, rounds: game.rounds.slice(1) })
 
-  const rows = globalThis.__scorebookTestSync.mutations[0].payload.rows
+  const mutations = globalThis.__scorebookTestSync.mutations
+  assert.deepEqual(mutations.map(({ entity, operation }) => ({ entity, operation })), [
+    { entity: 'rounds', operation: 'softDelete' },
+    { entity: 'scorebook', operation: 'upsert' },
+  ])
+  const rows = mutations[1].payload.rows
   assert.deepEqual(rows.rounds.map(({ id, round_index }) => [id, round_index]), [['r_two', 0], ['r_three', 1]])
   assert.ok(Date.parse(rows.rounds.find((round) => round.id === 'r_two').updated_at) > 1200)
   assert.ok(Date.parse(rows.rounds.find((round) => round.id === 'r_three').updated_at) > 1300)

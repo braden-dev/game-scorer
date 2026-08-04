@@ -332,12 +332,7 @@ export default function App() {
         const removedPlayers = previousGame?.players?.filter(
           (player) => !next.players.some((candidate) => candidate.id === player.id),
         ) ?? []
-        const mutations = [stateChangeMutation(nextState, previousState, {
-          gameId: next.id,
-          includeGame,
-          playerIds: changedPlayerIds,
-          roundIds: changedRoundIds,
-        })]
+        const mutations = []
         if (removedRound) mutations.push({
           id: removedRoundMutationId,
           entity: 'rounds',
@@ -350,6 +345,12 @@ export default function App() {
             entries: removedRound.entries,
           },
         })
+        mutations.push(stateChangeMutation(nextState, previousState, {
+          gameId: next.id,
+          includeGame,
+          playerIds: changedPlayerIds,
+          roundIds: changedRoundIds,
+        }))
         mutations.push(...removedPlayers.map((player) => ({
           id: uid('m'),
           entity: 'game_players',

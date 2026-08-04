@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createCloudApi } from '../src/lib/cloudApi.js'
-import { toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
+import { fromRemoteRows, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
 import { loadSyncStore } from '../src/lib/sync.js'
 
 class MemoryStorage {
@@ -13,7 +13,7 @@ class MemoryStorage {
   setItem(key, value) { this.#values.set(key, String(value)) }
 }
 
-function mutableCloudClient(initialRows) {
+function mutableCloudClient(initialRows, { enforceLiveRoundPositions = false } = {}) {
   const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
   const calls = []
 
@@ -62,6 +62,23 @@ function mutableCloudClient(initialRows) {
           try {
             const tableRows = tables[table] ?? (tables[table] = [])
             const matches = tableRows.filter((row) => filters.every((matchesFilter) => matchesFilter(row)))
+            if (enforceLiveRoundPositions && table === 'rounds' && ['update', 'upsert'].includes(action)) {
+              const incomingRows = action === 'update'
+                ? matches.map((row) => ({ ...row, ...payload }))
+                : tableRows.map((row) => {
+                  const incoming = payload.find((candidate) => candidate.id === row.id)
+                  return incoming ? { ...row, ...incoming } : row
+                }).concat(payload.filter((candidate) => !tableRows.some((row) => row.id === candidate.id)))
+              const livePositions = incomingRows
+                .filter((row) => row.deleted_at == null)
+                .map((row) => `${row.game_id}:${row.round_index}`)
+              if (new Set(livePositions).size !== livePositions.length) {
+                return Promise.resolve({
+                  data: null,
+                  error: { message: 'duplicate key value violates unique constraint rounds_live_game_round_index_idx' },
+                }).then(resolve, reject)
+              }
+            }
             if (action === 'update') {
               for (const row of matches) Object.assign(row, payload)
             }
@@ -207,6 +224,94 @@ test('mounts the real hook, follows navigation during deferred sync, deduplicate
     await act(async () => { root.unmount() })
     assert.equal(browser.listeners.has('online'), false)
     assert.equal(browser.documentListeners.has('visibilitychange'), false)
+    browser.restore()
+  }
+})
+
+test('replays an earlier-round deletion before shifted live rows against the unique-position client', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const existingAt = '2026-08-04T00:00:00.000Z'
+  const deletedAt = '2026-08-04T00:00:10.000Z'
+  const parentUpdatedAt = '2026-08-04T00:00:20.000Z'
+  const secondRoundUpdatedAt = '2026-08-04T00:00:30.000Z'
+  const thirdRoundUpdatedAt = '2026-08-04T00:00:40.000Z'
+  const initialRows = {
+    people: [],
+    games: [{
+      id: 'g_order', game_id: 'farkle', created_at: existingAt, updated_at: existingAt,
+      finished_at: null, settings: {}, deleted_at: null,
+    }],
+    gamePlayers: [],
+    rounds: [
+      { id: 'r_one', game_id: 'g_order', round_index: 0, entries: {}, updated_at: existingAt, deleted_at: null },
+      { id: 'r_two', game_id: 'g_order', round_index: 1, entries: { score: 2 }, updated_at: existingAt, deleted_at: null },
+      { id: 'r_three', game_id: 'g_order', round_index: 2, entries: { score: 3 }, updated_at: existingAt, deleted_at: null },
+    ],
+  }
+  const client = mutableCloudClient(initialRows, { enforceLiveRoundPositions: true })
+  const api = createCloudApi(client)
+  const state = fromRemoteRows(initialRows, 'g_order')
+  const shiftedRows = {
+    people: [],
+    games: [{ ...initialRows.games[0], updated_at: parentUpdatedAt }],
+    gamePlayers: [],
+    rounds: [
+      { ...initialRows.rounds[1], round_index: 0, updated_at: secondRoundUpdatedAt },
+      { ...initialRows.rounds[2], round_index: 1, updated_at: thirdRoundUpdatedAt },
+    ],
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync(state, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_delete_first', entity: 'rounds', entityId: 'r_one', operation: 'softDelete',
+        updatedAt: deletedAt,
+        payload: { gameId: 'g_order', roundIndex: 0, entries: {} },
+      })
+      observed.hook.enqueueStateMutation({
+        id: 'm_shift_after_delete', entity: 'scorebook', operation: 'upsert',
+        payload: { rows: shiftedRows },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const writes = client.calls
+      .filter((call) => ['games', 'rounds'].includes(call.table) && ['update', 'upsert'].includes(call.operation))
+    assert.deepEqual(writes.map(({ table, operation }) => [table, operation]), [
+      ['rounds', 'update'],
+      ['games', 'upsert'],
+      ['games', 'update'],
+      ['rounds', 'upsert'],
+      ['rounds', 'update'],
+      ['rounds', 'upsert'],
+      ['rounds', 'update'],
+    ])
+    const roundWrites = writes
+      .filter((call) => call.table === 'rounds' && ['update', 'upsert'].includes(call.operation))
+      .map((call) => ({ operation: call.operation, payload: call.payload }))
+    assert.equal(roundWrites[0].operation, 'update')
+    assert.deepEqual(roundWrites[0].payload, { deleted_at: deletedAt, updated_at: deletedAt })
+    assert.deepEqual(roundWrites.slice(1).map((write) => write.operation), ['upsert', 'update', 'upsert', 'update'])
+    assert.equal(observed.hook.error, null)
+    assert.equal(observed.hook.pendingCount, 0)
+    assert.deepEqual(client.rows('rounds').map(({ id, round_index, deleted_at }) => [id, round_index, deleted_at]), [
+      ['r_one', 0, deletedAt],
+      ['r_two', 0, null],
+      ['r_three', 1, null],
+    ])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+  } finally {
+    await act(async () => { root.unmount() })
     browser.restore()
   }
 })
