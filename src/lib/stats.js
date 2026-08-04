@@ -1,4 +1,5 @@
 import { GAMES_BY_ID, evaluate, getGameDef } from '../games/index.js'
+import { parseTimestamp } from './time.js'
 
 const gameSpecificBuilders = {
   farkle: ({ totals }) => finalTotalMetrics(totals, 'high'),
@@ -46,14 +47,6 @@ function assertKnownGameShape(game) {
   }
 }
 
-function timestamp(value) {
-  if (value === null || value === undefined || value === '') return null
-  const numeric = Number(value)
-  if (Number.isFinite(numeric)) return numeric
-  const parsed = Date.parse(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
 function compareIds(firstId, secondId) {
   return firstId === secondId ? 0 : firstId < secondId ? -1 : 1
 }
@@ -64,10 +57,10 @@ function knownGameDef(gameId) {
 }
 
 function compareFinishedGames(first, second) {
-  const firstFinished = timestamp(first.game.finishedAt)
-  const secondFinished = timestamp(second.game.finishedAt)
-  const firstCreated = timestamp(first.game.createdAt)
-  const secondCreated = timestamp(second.game.createdAt)
+  const firstFinished = parseTimestamp(first.game.finishedAt)
+  const secondFinished = parseTimestamp(second.game.finishedAt)
+  const firstCreated = parseTimestamp(first.game.createdAt)
+  const secondCreated = parseTimestamp(second.game.createdAt)
   const firstTime = firstFinished ?? firstCreated
   const secondTime = secondFinished ?? secondCreated
 

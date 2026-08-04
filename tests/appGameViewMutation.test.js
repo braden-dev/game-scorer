@@ -333,6 +333,32 @@ test('App follows direct game/home history destinations and excludes deleted gam
   assert.deepEqual(gamesRoute.props.games, [])
 })
 
+test('App route matrix renders each people, leaderboard, and games branch', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  const routes = [
+    { pathname: '/people', marker: 'People', props: { roster: state.roster, games: state.games } },
+    { pathname: '/people/p_one', marker: 'PersonPage', props: { personId: 'p_one' } },
+    { pathname: '/leaderboard', marker: 'Leaderboard', props: { roster: state.roster, games: state.games } },
+    { pathname: '/games', marker: 'Games', props: { games: state.games } },
+    { pathname: '/games/g_mutations', marker: 'GameView', props: { game: state.games[0] } },
+  ]
+
+  for (const route of routes) {
+    prepareStorage(state)
+    globalThis.window.location = { pathname: route.pathname }
+    resetTestState()
+    globalThis.__scorebookTestReact.begin()
+
+    const appTree = App()
+
+    assert.equal(appTree.type.name, route.marker, route.pathname)
+    for (const [prop, value] of Object.entries(route.props)) {
+      assert.deepEqual(appTree.props[prop], value, `${route.pathname} ${prop}`)
+    }
+  }
+})
+
 test('App popstate subscription clears activeGameId when leaving a game route', async () => {
   const App = await loadComponent('src/App.jsx', { realEffects: true })
   prepareStorage(gameState())
