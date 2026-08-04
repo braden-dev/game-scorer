@@ -13,7 +13,7 @@ class MemoryStorage {
   setItem(key, value) { this.#values.set(key, String(value)) }
 }
 
-function mutableCloudClient(initialRows, { enforceLiveRoundPositions = false } = {}) {
+function mutableCloudClient(initialRows, { enforceLiveRoundPositions = false, onUpdate } = {}) {
   const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
   const calls = []
 
@@ -80,7 +80,10 @@ function mutableCloudClient(initialRows, { enforceLiveRoundPositions = false } =
               }
             }
             if (action === 'update') {
-              for (const row of matches) Object.assign(row, payload)
+              for (const row of matches) {
+                Object.assign(row, payload)
+                onUpdate?.(table, row, payload)
+              }
             }
             return Promise.resolve({ data: matches, error: null }).then(resolve, reject)
           } catch (error) {
@@ -310,6 +313,181 @@ test('replays an earlier-round deletion before shifted live rows against the uni
       ['r_three', 1, null],
     ])
     assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('restores a round after a server-triggered delete with the canonical tombstone version', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const existingAt = '2026-08-04T00:00:00.000Z'
+  const deletedAt = '2026-08-04T00:00:10.000Z'
+  const serverAt = '2026-08-04T00:00:11.000Z'
+  const shiftedTwoAt = '2026-08-04T00:00:20.000Z'
+  const shiftedThreeAt = '2026-08-04T00:00:21.000Z'
+  const restoreAt = '2026-08-04T00:00:30.000Z'
+  const initialRows = {
+    people: [],
+    games: [{ id: 'g_restore', game_id: 'farkle', updated_at: existingAt, finished_at: null, settings: {}, deleted_at: null }],
+    game_players: [],
+    rounds: [
+      { id: 'r_restore', game_id: 'g_restore', round_index: 0, entries: { p_one: { score: 12 } }, updated_at: existingAt, deleted_at: null },
+      { id: 'r_two', game_id: 'g_restore', round_index: 1, entries: { p_one: { score: 22 } }, updated_at: existingAt, deleted_at: null },
+      { id: 'r_three', game_id: 'g_restore', round_index: 2, entries: { p_one: { score: 32 } }, updated_at: existingAt, deleted_at: null },
+    ],
+  }
+  const client = mutableCloudClient(initialRows, { enforceLiveRoundPositions: true,
+    onUpdate(table, row, payload) {
+      if (table === 'rounds' && payload.deleted_at === deletedAt) row.updated_at = serverAt
+    },
+  })
+  const api = createCloudApi(client)
+  const state = fromRemoteRows(initialRows, 'g_restore')
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync(state, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_server_delete', entity: 'rounds', entityId: 'r_restore', operation: 'softDelete',
+        updatedAt: deletedAt,
+        payload: { gameId: 'g_restore', roundIndex: 0, entries: { p_one: { score: 12 } } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const deletedStore = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.equal(deletedStore.cache.__cloudMetadata.rounds[0].updatedAt, Date.parse(serverAt))
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_shift', entity: 'scorebook', operation: 'upsert',
+        payload: {
+          rows: {
+            people: [], games: [], gamePlayers: [],
+            rounds: [
+              { ...initialRows.rounds[1], round_index: 0, updated_at: shiftedTwoAt },
+              { ...initialRows.rounds[2], round_index: 1, updated_at: shiftedThreeAt },
+            ],
+          },
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_restore', entity: 'scorebook', operation: 'restore',
+        payload: {
+          rows: {
+            people: [], games: [], gamePlayers: [],
+            rounds: [
+              { ...initialRows.rounds[0], round_index: 0, updated_at: restoreAt, deleted_at: null },
+              { ...initialRows.rounds[1], round_index: 1, updated_at: '2026-08-04T00:00:31.000Z', deleted_at: null },
+              { ...initialRows.rounds[2], round_index: 2, updated_at: '2026-08-04T00:00:32.000Z', deleted_at: null },
+            ],
+          },
+        },
+        restore: {
+          rounds: [{ id: 'r_restore', game_id: 'g_restore', updated_at: serverAt, deleted_at: deletedAt }],
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(observed.hook.error, null)
+    assert.equal(observed.hook.pendingCount, 0)
+    assert.deepEqual(client.rows('rounds').map(({ id, round_index, deleted_at }) => [id, round_index, deleted_at]), [
+      ['r_restore', 0, null], ['r_two', 1, null], ['r_three', 2, null],
+    ])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('surfaces a conflict when a deleted round changes before Undo restore', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const existingAt = '2026-08-04T00:00:00.000Z'
+  const deletedAt = '2026-08-04T00:00:10.000Z'
+  const serverAt = '2026-08-04T00:00:11.000Z'
+  const changedAt = '2026-08-04T00:00:12.000Z'
+  const initialRows = {
+    people: [],
+    games: [{ id: 'g_restore_conflict', game_id: 'farkle', updated_at: existingAt, finished_at: null, settings: {}, deleted_at: null }],
+    game_players: [],
+    rounds: [{
+      id: 'r_restore_conflict', game_id: 'g_restore_conflict', round_index: 2,
+      entries: { p_one: { score: 12 } }, updated_at: existingAt, deleted_at: null,
+    }],
+  }
+  const client = mutableCloudClient(initialRows, {
+    onUpdate(table, row, payload) {
+      if (table === 'rounds' && payload.deleted_at === deletedAt) row.updated_at = serverAt
+    },
+  })
+  const api = createCloudApi(client)
+  const state = fromRemoteRows(initialRows, 'g_restore_conflict')
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync(state, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_server_delete_conflict', entity: 'rounds', entityId: 'r_restore_conflict', operation: 'softDelete',
+        updatedAt: deletedAt,
+        payload: { gameId: 'g_restore_conflict', roundIndex: 2, entries: { p_one: { score: 12 } } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    Object.assign(client.rows('rounds')[0], {
+      entries: { p_one: { score: 99 } },
+      updated_at: changedAt,
+    })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_restore_conflict', entity: 'scorebook', operation: 'restore',
+        payload: {
+          rows: {
+            people: [], games: [], gamePlayers: [],
+            rounds: [{
+              id: 'r_restore_conflict', game_id: 'g_restore_conflict', round_index: 2,
+              entries: { p_one: { score: 12 } }, updated_at: changedAt, deleted_at: null,
+            }],
+          },
+        },
+        restore: {
+          rounds: [{ id: 'r_restore_conflict', game_id: 'g_restore_conflict', updated_at: serverAt, deleted_at: deletedAt }],
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(stored.outbox[0].status, 'conflict')
+    assert.equal(stored.outbox[0].error, 'This was changed on another device. The shared version is now shown.')
+    assert.deepEqual(client.rows('rounds')[0].entries, { p_one: { score: 99 } })
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()

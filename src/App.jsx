@@ -5,7 +5,7 @@ import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.j
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { clone, loadSyncStore } from './lib/sync.js'
-import { toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
+import { findCloudTombstone, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
@@ -62,6 +62,30 @@ function revivedGame(game, deletedAt) {
   const revived = snapshot(game)
   revived.updatedAt = updatedAt
   return revived
+}
+
+function restoreExpectedTombstone(entity, id, parentId, fallbackAt) {
+  const store = loadSyncStore()
+  const requestedDeletedAt = new Date(fallbackAt).getTime()
+  const cachedTombstones = [
+    findCloudTombstone(store.cache, entity, id, parentId),
+    findCloudTombstone(store.reconciledCache, entity, id, parentId),
+  ]
+  const tombstone = cachedTombstones.find((candidate) => (
+    candidate && new Date(candidate.deletedAt).getTime() === requestedDeletedAt
+  ))
+  const deletedAt = tombstone?.deletedAt ?? new Date(fallbackAt).toISOString()
+  const updatedAt = tombstone?.updatedAt ?? deletedAt
+  const identity = entity === 'game_players'
+    ? { game_id: parentId, person_id: id }
+    : entity === 'rounds'
+      ? { id, game_id: parentId }
+      : { id }
+  return {
+    ...identity,
+    updated_at: new Date(updatedAt).toISOString(),
+    deleted_at: deletedAt,
+  }
 }
 
 export function AppShell({ content, undoToast, syncNotice }) {
@@ -151,13 +175,25 @@ export default function App() {
     setUndoAction(null)
     if (action.mutationId) sync.cancelSyncMutations?.((mutation) => mutation.id === action.mutationId)
 
+    const restoreExpected = action.kind === 'round'
+      ? restoreExpectedTombstone('rounds', action.round.id, action.gameId, action.deletedAt)
+      : restoreExpectedTombstone('games', action.game.id, null, action.deletedAt)
+    const restoreMutation = (nextState, previousState, options, entity) => ({
+      ...stateChangeMutation(nextState, previousState, options),
+      operation: 'restore',
+      restore: { [entity]: [restoreExpected] },
+    })
     const mutationFactory = action.kind === 'round'
-      ? (nextState, previousState) => stateChangeMutation(nextState, previousState, {
+      ? (nextState, previousState) => restoreMutation(nextState, previousState, {
         gameId: action.gameId,
         playerIds: [],
-        roundIds: [action.round.id],
-      })
-      : stateChangeMutation
+        roundIds: changedRecordIds(
+          previousState.games.find((game) => game.id === action.gameId)?.rounds ?? [],
+          nextState.games.find((game) => game.id === action.gameId)?.rounds ?? [],
+          true,
+        ),
+      }, 'rounds')
+      : (nextState, previousState) => restoreMutation(nextState, previousState, undefined, 'games')
     applyMutation((previous) => {
       if (action.kind === 'game') {
         if (previous.games.some((game) => game.id === action.game.id)) return previous

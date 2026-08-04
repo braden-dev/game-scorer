@@ -319,6 +319,20 @@ function latestRoundTombstone(metadata, gameId, roundId) {
     }, null)
 }
 
+export function findCloudTombstone(state, entity, id, parentId = null) {
+  const group = mutationEntity(entity)
+  return metadataRecords(state?.[CLOUD_METADATA], group)
+    .filter((record) => isTombstone(record) && record.id === id)
+    .filter((record) => (
+      (group !== 'gamePlayers' && group !== 'rounds')
+      || parentId == null
+      || record.gameId === parentId
+    ))
+    .reduce((latest, record) => (
+      !latest || tombstoneVersion(record) >= tombstoneVersion(latest) ? record : latest
+    ), null)
+}
+
 function playerVersion(player, game) {
   return timestamp(field(player, 'updatedAt', 'updated_at'))
     ?? timestamp(field(game, 'updatedAt', 'updated_at'))

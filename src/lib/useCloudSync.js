@@ -127,6 +127,10 @@ function isSoftDeleteMutation(mutation) {
   return mutation?.operation === 'softDelete' || mutation?.operation === 'delete'
 }
 
+function isRestoreMutation(mutation) {
+  return mutation?.operation === 'restore'
+}
+
 function isConflictMutation(mutation) {
   return mutation?.status === 'conflict'
 }
@@ -251,6 +255,14 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   }, [updateSyncStore])
 
   const replayMutation = useCallback(async (mutation) => {
+    if (isRestoreMutation(mutation)) {
+      const rows = rowsForMutation(mutation)
+      if (!rows) throw new Error(`Cannot build rows for restore entity: ${mutation?.entity}`)
+      if (typeof apiRef.current.restoreRows !== 'function') {
+        throw new Error('Cloud restore is unavailable')
+      }
+      return apiRef.current.restoreRows(rows, mutation.restore ?? mutation.payload?.restore ?? {})
+    }
     if (isSoftDeleteMutation(mutation)) {
       return apiRef.current.softDelete(mutation.entity, mutation.entityId, mutationUpdatedAt(mutation))
     }

@@ -480,6 +480,100 @@ test('accepts a composite delete retry when the desired tombstone has a newer se
   assert.deepEqual(client.rows('game_players'), [canonical])
 })
 
+test('restores a matching tombstone with its server version despite a newer trigger timestamp', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const restoreAt = '2026-01-02T00:00:02.000Z'
+  const client = mutableClient({
+    rounds: [{
+      id: 'r_restore', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+      updated_at: serverAt, deleted_at: deletedAt,
+    }],
+  })
+  const result = await createCloudApi(client).restoreRows({
+    rounds: [{
+      id: 'r_restore', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+      updated_at: restoreAt, deleted_at: null,
+    }],
+  }, {
+    rounds: [{ id: 'r_restore', game_id: 'g_restore', updated_at: serverAt, deleted_at: deletedAt }],
+  })
+
+  assert.deepEqual(result.rounds, [{
+    id: 'r_restore', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+    updated_at: restoreAt, deleted_at: null,
+  }])
+  assert.deepEqual(client.rows('rounds'), result.rounds)
+  assert.deepEqual(client.calls.filter((call) => call.table === 'rounds' && call.operation === 'eq').slice(-3), [
+    { table: 'rounds', operation: 'eq', column: 'id', value: 'r_restore' },
+    { table: 'rounds', operation: 'eq', column: 'deleted_at', value: deletedAt },
+    { table: 'rounds', operation: 'eq', column: 'updated_at', value: serverAt },
+  ])
+})
+
+test('restores game and composite player tombstones through the same conditional path', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const serverAt = '2026-01-02T00:00:01.000Z'
+  const restoreAt = '2026-01-02T00:00:02.000Z'
+  const client = mutableClient({
+    games: [{
+      id: 'g_restore', game_id: 'farkle', created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: serverAt, finished_at: null, settings: {}, deleted_at: deletedAt,
+    }],
+    game_players: [{
+      game_id: 'g_restore', person_id: 'p_restore', seat_order: 2, name_snapshot: 'Restore',
+      updated_at: serverAt, deleted_at: deletedAt,
+    }],
+  })
+
+  const result = await createCloudApi(client).restoreRows({
+    games: [{
+      id: 'g_restore', game_id: 'farkle', created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: restoreAt, finished_at: null, settings: {}, deleted_at: null,
+    }],
+    gamePlayers: [{
+      game_id: 'g_restore', person_id: 'p_restore', seat_order: 2, name_snapshot: 'Restore',
+      updated_at: restoreAt, deleted_at: null,
+    }],
+  }, {
+    games: [{ id: 'g_restore', updated_at: serverAt, deleted_at: deletedAt }],
+    gamePlayers: [{ game_id: 'g_restore', person_id: 'p_restore', updated_at: serverAt, deleted_at: deletedAt }],
+  })
+
+  assert.equal(result.games[0].deleted_at, null)
+  assert.equal(result.gamePlayers[0].deleted_at, null)
+  assert.equal(client.rows('games')[0].updated_at, restoreAt)
+  assert.equal(client.rows('game_players')[0].updated_at, restoreAt)
+})
+
+test('rejects restore when another device changes the tombstone after deletion', async () => {
+  const deletedAt = '2026-01-02T00:00:00.000Z'
+  const expectedServerAt = '2026-01-02T00:00:01.000Z'
+  const changedServerAt = '2026-01-02T00:00:03.000Z'
+  const client = mutableClient({
+    rounds: [{
+      id: 'r_restore_conflict', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 99 } },
+      updated_at: changedServerAt, deleted_at: deletedAt,
+    }],
+  })
+
+  await assert.rejects(
+    createCloudApi(client).restoreRows({
+      rounds: [{
+        id: 'r_restore_conflict', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 12 } },
+        updated_at: '2026-01-02T00:00:04.000Z', deleted_at: null,
+      }],
+    }, {
+      rounds: [{ id: 'r_restore_conflict', game_id: 'g_restore', updated_at: expectedServerAt, deleted_at: deletedAt }],
+    }),
+    /rounds.*newer remote row/,
+  )
+  assert.deepEqual(client.rows('rounds')[0], {
+    id: 'r_restore_conflict', game_id: 'g_restore', round_index: 3, entries: { p_one: { score: 99 } },
+    updated_at: changedServerAt, deleted_at: deletedAt,
+  })
+})
+
 test('rejects a stale composite game-player soft delete', async () => {
   const client = mutableClient({
     game_players: [{ game_id: 'g_one', person_id: 'p_one', updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null }],

@@ -63,6 +63,16 @@ function sameCanonicalPayload(existing, attempted) {
   return samePayload(canonical, requested)
 }
 
+function restorePayload(row) {
+  const payload = canonicalPayload(row)
+  delete payload.deleted_at
+  return payload
+}
+
+function sameRestorePayload(existing, attempted) {
+  return samePayload(restorePayload(existing), restorePayload(attempted))
+}
+
 function rowValue(row, column) {
   if (row?.[column] !== undefined) return row[column]
   const camel = column.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
@@ -81,6 +91,11 @@ function keyFilters(query, definition, row) {
 
 function selectedKeys(definition) {
   return (definition.keys ?? definition.conflict.split(',').map((column) => [column])).map(([column]) => column).join(',')
+}
+
+function sameEntityKey(definition, left, right) {
+  return (definition.keys ?? definition.conflict.split(',').map((column) => [column]))
+    .every(([column]) => rowValue(left, column) === rowValue(right, column))
 }
 
 async function checked(response, table) {
@@ -166,6 +181,31 @@ async function upsertWithoutOverwriting(client, definition, row) {
   return compareAndSetRow(client, definition, row, existing)
 }
 
+async function restoreRow(client, definition, row, expectedTombstone) {
+  const existing = await findExisting(client, definition, row)
+  if (!existing) throw conflictError(definition.table)
+
+  if (timestamp(existing.deleted_at) === null) {
+    if (sameRestorePayload(existing, row)) return existing
+    throw conflictError(definition.table)
+  }
+
+  const expectedDeletedAt = timestamp(rowValue(expectedTombstone, 'deleted_at'))
+  const expectedUpdatedAt = timestamp(rowValue(expectedTombstone, 'updated_at'))
+  if (expectedDeletedAt === null || expectedUpdatedAt === null) throw conflictError(definition.table)
+  if (timestamp(existing.deleted_at) !== expectedDeletedAt
+    || timestamp(existing.updated_at) !== expectedUpdatedAt
+    || !sameRestorePayload(existing, row)) {
+    throw conflictError(definition.table)
+  }
+
+  let query = keyFilters(client.from(definition.table).update({ ...row, deleted_at: null }), definition, row)
+  query = query.eq('deleted_at', rowValue(expectedTombstone, 'deleted_at'))
+  query = query.eq('updated_at', rowValue(expectedTombstone, 'updated_at'))
+  const data = await checkedWrite(query.select('*'), definition.table, 'restore')
+  return Array.isArray(data) ? data[0] ?? existing : data ?? existing
+}
+
 function entityDefinition(entity) {
   if (entity === 'game_players') return ENTITY_TABLES.gamePlayers
   return ENTITY_TABLES[entity]
@@ -196,6 +236,36 @@ export function createCloudApi(client) {
             throw conflictError(definition.table)
           }
           canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row))
+        }
+      }
+      return canonicalRows
+    },
+
+    async restoreRows(rows = {}, expectedTombstones = {}) {
+      const canonicalRows = Object.fromEntries(TABLES.map((definition) => [definition.key, []]))
+      for (const definition of TABLES) {
+        const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
+        const expectedRows = Array.isArray(expectedTombstones[definition.key])
+          ? expectedTombstones[definition.key]
+          : []
+        const positionColumn = definition.key === 'rounds'
+          ? 'round_index'
+          : definition.key === 'gamePlayers' ? 'seat_order' : null
+        const orderedRows = payload
+          .map((row) => ({
+            row,
+            expectedTombstone: expectedRows.find((candidate) => sameEntityKey(definition, candidate, row)),
+          }))
+          .sort((left, right) => {
+            const expectedOrder = Number(Boolean(left.expectedTombstone)) - Number(Boolean(right.expectedTombstone))
+            if (expectedOrder !== 0) return expectedOrder
+            if (!positionColumn) return 0
+            return (Number(rowValue(right.row, positionColumn)) || 0) - (Number(rowValue(left.row, positionColumn)) || 0)
+          })
+        for (const { row, expectedTombstone } of orderedRows) {
+          canonicalRows[definition.key].push(expectedTombstone
+            ? await restoreRow(client, definition, row, expectedTombstone)
+            : await upsertWithoutOverwriting(client, definition, row))
         }
       }
       return canonicalRows

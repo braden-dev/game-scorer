@@ -442,9 +442,12 @@ test('game deletion can be undone before the ten-second window expires', async (
   const appAfterUndo = App()
   renderedHome = appContent(appAfterUndo).props.children[0].type(appContent(appAfterUndo).props.children[0].props)
   assert.deepEqual(appContent(appAfterUndo).props.children[0].props.games.map((game) => game.id), ['g_mutations'])
+  const restoreMutation = globalThis.__scorebookTestSync.mutations[0]
   assert.deepEqual(globalThis.__scorebookTestSync.mutations.map(({ entity, operation }) => ({ entity, operation })), [
-    { entity: 'scorebook', operation: 'upsert' },
+    { entity: 'scorebook', operation: 'restore' },
   ])
+  assert.equal(restoreMutation.restore.games[0].id, 'g_mutations')
+  assert.equal(restoreMutation.restore.games[0].updated_at, restoreMutation.restore.games[0].deleted_at)
 })
 
 test('game Undo preserves untouched child timestamps in the full-game upsert', async () => {
@@ -711,6 +714,46 @@ test('synced earlier round deletion sends shifted rows with new versions', async
   assert.deepEqual(rows.rounds.map(({ id, round_index }) => [id, round_index]), [['r_two', 0], ['r_three', 1]])
   assert.ok(Date.parse(rows.rounds.find((round) => round.id === 'r_two').updated_at) > 1200)
   assert.ok(Date.parse(rows.rounds.find((round) => round.id === 'r_three').updated_at) > 1300)
+})
+
+test('round Undo restores shifted rows with explicit tombstone metadata', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const source = gameState()
+  source.activeGameId = 'g_mutations'
+  source.games[0].updatedAt = 1000
+  source.games[0].rounds = [
+    { id: 'r_one', updatedAt: 1100, entries: { p_one: { score: 100 }, p_two: { score: 200 } } },
+    { id: 'r_two', updatedAt: 1200, entries: { p_one: { score: 300 }, p_two: { score: 400 } } },
+    { id: 'r_three', updatedAt: 1300, entries: { p_one: { score: 500 }, p_two: { score: 600 } } },
+  ]
+  const synced = fromRemoteRows(toRemoteRows(source), source.activeGameId)
+  prepareStorage(source)
+  resetTestState()
+  globalThis.__scorebookTestSync.hydratedState = synced
+
+  globalThis.__scorebookTestReact.begin()
+  App()
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({ ...game, rounds: game.rounds.slice(1) })
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo').props.onClick()
+
+  const mutations = globalThis.__scorebookTestSync.mutations
+  const restoreMutation = mutations.find((mutation) => mutation.operation === 'restore')
+  assert.ok(restoreMutation)
+  assert.deepEqual(restoreMutation.payload.rows.rounds.map(({ id, round_index }) => [id, round_index]), [
+    ['r_one', 0], ['r_two', 1], ['r_three', 2],
+  ])
+  assert.deepEqual(restoreMutation.restore.rounds, [{
+    id: 'r_one', game_id: 'g_mutations',
+    updated_at: restoreMutation.restore.rounds[0].deleted_at,
+    deleted_at: restoreMutation.restore.rounds[0].deleted_at,
+  }])
 })
 
 test('synced earlier player removal sends shifted seats with new versions', async () => {
