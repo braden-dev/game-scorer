@@ -1,4 +1,4 @@
-import { evaluate, getGameDef } from '../games/index.js'
+import { GAMES_BY_ID, evaluate, getGameDef } from '../games/index.js'
 
 const gameSpecificBuilders = {
   farkle: ({ totals }) => finalTotalMetrics(totals, 'high'),
@@ -58,6 +58,11 @@ function compareIds(firstId, secondId) {
   return firstId === secondId ? 0 : firstId < secondId ? -1 : 1
 }
 
+function knownGameDef(gameId) {
+  if (typeof gameId !== 'string' || !Object.hasOwn(GAMES_BY_ID, gameId)) return null
+  return getGameDef(gameId)
+}
+
 function compareFinishedGames(first, second) {
   const firstFinished = timestamp(first.game.finishedAt)
   const secondFinished = timestamp(second.game.finishedAt)
@@ -100,7 +105,7 @@ function evaluatedGames(games) {
   if (!Array.isArray(games)) return []
 
   return games.flatMap((game, originalIndex) => {
-    if (!isRecord(game) || !getGameDef(game.gameId)) return []
+    if (!isRecord(game) || !knownGameDef(game.gameId)) return []
     assertKnownGameShape(game)
     const evaluated = evaluate(game)
     if (evaluated?.status?.finished !== true) return []

@@ -214,6 +214,26 @@ test('surfaces malformed known-game records instead of treating them as zero sta
   )
 })
 
+test('ignores reserved object-prototype IDs as unknown games', () => {
+  for (const gameId of ['__proto__', 'constructor', 'toString']) {
+    assert.deepEqual(buildPersonStats('p1', [{ id: `reserved-${gameId}`, gameId }]), {
+      games: 0,
+      wins: 0,
+      winRate: 0,
+      averageFinish: null,
+      longestWinStreak: 0,
+      favoriteGame: null,
+      mostPlayedTeammate: null,
+    })
+  }
+})
+
+test('surfaces evaluator errors from structurally valid known games', () => {
+  const game = farkle('evaluator-error', { p1: Symbol('invalid-score'), p2: 50 })
+
+  assert.throws(() => buildPersonStats('p1', [game]), TypeError)
+})
+
 test('chooses the lexicographically first game ID when favorite games are tied', () => {
   const games = [
     farkle('farkle-game', { p1: 100, p2: 50 }),
