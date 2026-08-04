@@ -207,7 +207,7 @@ async function compareAndSetRow(client, definition, row, existing) {
   return Array.isArray(data) ? data[0] ?? existing : data ?? existing
 }
 
-async function upsertWithoutOverwriting(client, definition, row) {
+async function upsertWithoutOverwriting(client, definition, row, { additive = false } = {}) {
   assertValidVersion(definition.table, rowVersion(row))
   await checked(
     client.from(definition.table).upsert([row], {
@@ -218,7 +218,7 @@ async function upsertWithoutOverwriting(client, definition, row) {
   )
   const existing = await findExisting(client, definition, row)
   if (!existing) throw conflictError(definition.table)
-  return compareAndSetRow(client, definition, row, existing)
+  return additive ? existing : compareAndSetRow(client, definition, row, existing)
 }
 
 async function restoreRow(client, definition, row, expectedTombstone) {
@@ -272,7 +272,7 @@ export function createCloudApi(client) {
       return Object.fromEntries(entries)
     },
 
-    async upsertRows(rows = {}) {
+    async upsertRows(rows = {}, { additive = false } = {}) {
       const canonicalRows = Object.fromEntries(TABLES.map((definition) => [definition.key, []]))
       for (const definition of TABLES) {
         const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
@@ -283,11 +283,11 @@ export function createCloudApi(client) {
           if (existing) {
             const existingVersion = rowVersion(existing)
             assertValidVersion(definition.table, existingVersion)
-            if (existingVersion > requestedVersion && !sameCanonicalPayload(existing, row)) {
+            if (!additive && existingVersion > requestedVersion && !sameCanonicalPayload(existing, row)) {
               throw conflictError(definition.table)
             }
           }
-          canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row))
+          canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row, { additive }))
         }
       }
       return canonicalRows

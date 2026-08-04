@@ -1212,6 +1212,102 @@ test('does not overwrite a row inserted remotely during initial migration', asyn
   }
 })
 
+test('uses additive writes for initial migration rows and preserves an older concurrent remote row', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const remoteWinner = {
+    id: 'p_additive_race',
+    name: 'Remote winner',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    deleted_at: null,
+  }
+  const remoteRows = { people: [], games: [], gamePlayers: [], rounds: [] }
+  const upsertCalls = []
+  const api = {
+    fetchSnapshot: async () => remoteRows,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async (rows, options) => {
+      upsertCalls.push({ rows, options })
+      if (upsertCalls.length === 1) remoteRows.people = [remoteWinner]
+      for (const [table, incomingRows] of Object.entries(rows)) {
+        const existingRows = remoteRows[table]
+        const keyFor = (row) => table === 'gamePlayers'
+          ? `${row.game_id}:${row.person_id}`
+          : row.id
+        for (const row of incomingRows) {
+          const existingIndex = existingRows.findIndex((candidate) => keyFor(candidate) === keyFor(row))
+          if (existingIndex === -1) existingRows.push({ ...row })
+        }
+      }
+      return remoteRows
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_initial_migration_additive',
+        entity: 'scorebook',
+        operation: 'upsert',
+        initialMigration: true,
+        payload: {
+          rows: {
+            people: [
+              { ...remoteWinner, name: 'Stale local', updated_at: '2026-01-03T00:00:00.000Z' },
+              { id: 'p_additive_missing', name: 'Missing local', updated_at: '2026-01-03T00:00:00.000Z', deleted_at: null },
+            ],
+            games: [],
+            gamePlayers: [],
+            rounds: [],
+          },
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.deepEqual(upsertCalls[0].options, { additive: true })
+    assert.deepEqual(remoteRows.people.find(({ id }) => id === remoteWinner.id), remoteWinner)
+    assert.ok(remoteRows.people.some(({ id }) => id === 'p_additive_missing'))
+
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_normal_cas',
+        entity: 'scorebook',
+        operation: 'upsert',
+        payload: {
+          rows: {
+            people: [{ id: 'p_normal_cas', name: 'Normal', updated_at: '2026-01-04T00:00:00.000Z', deleted_at: null }],
+            games: [],
+            gamePlayers: [],
+            rounds: [],
+          },
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    assert.equal(upsertCalls[1].options, undefined)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('rebases an entity-level upsert conflict with a fresh row timestamp', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

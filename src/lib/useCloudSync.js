@@ -376,7 +376,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     if (mutation?.operation !== 'upsert') throw new Error(`Unknown sync operation: ${mutation?.operation}`)
     const rows = rowsForMutation(mutation)
     if (!rows) throw new Error(`Cannot build rows for sync entity: ${mutation?.entity}`)
-    return apiRef.current.upsertRows(rows)
+    return apiRef.current.upsertRows(rows, mutation.initialMigration ? { additive: true } : undefined)
   }, [])
 
   const runSync = useCallback(async ({ initial = false } = {}) => {

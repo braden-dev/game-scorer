@@ -907,6 +907,62 @@ test('handles a concurrent create with ignore-duplicates and conditional reconci
   })
 })
 
+test('additive upserts preserve concurrent identities and insert genuinely missing rows', async () => {
+  const remoteVersion = '2026-01-01T00:00:00.000Z'
+  const migrationVersion = '2026-01-03T00:00:00.000Z'
+  const existing = {
+    people: {
+      id: 'p_race', name: 'Remote winner', updated_at: remoteVersion, deleted_at: null,
+    },
+    games: {
+      id: 'g_race', game_id: 'farkle', created_at: remoteVersion, updated_at: remoteVersion,
+      settings: { source: 'remote' }, finished_at: null, deleted_at: null,
+    },
+    game_players: {
+      game_id: 'g_race', person_id: 'p_race', seat_order: 0, name_snapshot: 'Remote winner',
+      updated_at: remoteVersion, deleted_at: null,
+    },
+    rounds: {
+      id: 'r_race', game_id: 'g_race', round_index: 0, entries: { p_race: { score: 10 } },
+      updated_at: remoteVersion, deleted_at: remoteVersion,
+    },
+  }
+  const client = mutableClient({
+    people: [existing.people],
+    games: [existing.games],
+    game_players: [existing.game_players],
+    rounds: [existing.rounds],
+  })
+
+  await createCloudApi(client).upsertRows({
+    people: [
+      { ...existing.people, name: 'Stale local', updated_at: migrationVersion },
+      { id: 'p_missing', name: 'Missing local', updated_at: migrationVersion, deleted_at: null },
+    ],
+    games: [
+      { ...existing.games, settings: { source: 'local' }, updated_at: migrationVersion },
+      { ...existing.games, id: 'g_missing', settings: {}, updated_at: migrationVersion },
+    ],
+    gamePlayers: [
+      { ...existing.game_players, name_snapshot: 'Stale local', updated_at: migrationVersion },
+      { ...existing.game_players, person_id: 'p_missing', name_snapshot: 'Missing local', updated_at: migrationVersion },
+    ],
+    rounds: [
+      { ...existing.rounds, entries: { p_race: { score: 99 } }, deleted_at: null, updated_at: migrationVersion },
+      { ...existing.rounds, id: 'r_missing', entries: { p_race: { score: 20 } }, deleted_at: null, updated_at: migrationVersion },
+    ],
+  }, { additive: true })
+
+  assert.deepEqual(client.rows('people').find(({ id }) => id === existing.people.id), existing.people)
+  assert.deepEqual(client.rows('games').find(({ id }) => id === existing.games.id), existing.games)
+  assert.deepEqual(client.rows('game_players').find(({ person_id }) => person_id === existing.game_players.person_id), existing.game_players)
+  assert.deepEqual(client.rows('rounds').find(({ id }) => id === existing.rounds.id), existing.rounds)
+  assert.ok(client.rows('people').some(({ id }) => id === 'p_missing'))
+  assert.ok(client.rows('games').some(({ id }) => id === 'g_missing'))
+  assert.ok(client.rows('game_players').some(({ person_id }) => person_id === 'p_missing'))
+  assert.ok(client.rows('rounds').some(({ id }) => id === 'r_missing'))
+})
+
 test('conditionally reconciles a concurrent older create with the local newer row', async () => {
   const client = mutableClient({}, {
     beforeUpsert(table, payload, tableRows) {
