@@ -3,6 +3,7 @@ const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
 const ROUND_POSITION_OVERRIDE = Symbol('gamescorer.roundPositionOverride')
 const PLAYER_POSITION_OVERRIDE = Symbol('gamescorer.playerPositionOverride')
 const SUPPORTED_GAME_IDS = new Set(['farkle', 'dutch-blitz', 'three-thirteen'])
+const MAX_NAME_LENGTH = 80
 
 function rows(value) {
   return Array.isArray(value) ? value : []
@@ -60,6 +61,12 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
+function validRemoteName(value) {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && Array.from(value).length <= MAX_NAME_LENGTH
+}
+
 function warnMalformedRemote(kind, row, reason) {
   const identity = row?.id ?? row?.game_id ?? row?.person_id ?? 'unknown'
   console.warn(`[scorebook] Skipping malformed remote ${kind} (${identity}): ${reason}`)
@@ -89,7 +96,7 @@ function validRemoteRow(kind, row) {
   if (!isRecord(row)) return false
   if (kind === 'person') {
     return typeof row.id === 'string' && row.id.length > 0
-      && (isTombstone(row) || typeof row.name === 'string')
+      && (row.name === undefined ? isTombstone(row) : validRemoteName(row.name))
   }
   if (kind === 'game') {
     return typeof row.id === 'string' && row.id.length > 0
@@ -100,9 +107,8 @@ function validRemoteRow(kind, row) {
   if (kind === 'player') {
     return typeof row.game_id === 'string' && row.game_id.length > 0
       && typeof row.person_id === 'string' && row.person_id.length > 0
-      && (isTombstone(row)
-        || ((row.seat_order === undefined || Number.isInteger(row.seat_order))
-          && (row.name_snapshot === undefined || typeof row.name_snapshot === 'string')))
+      && (row.name_snapshot === undefined || validRemoteName(row.name_snapshot))
+      && (isTombstone(row) || (row.seat_order === undefined || Number.isInteger(row.seat_order)))
   }
   return typeof row.game_id === 'string' && row.game_id.length > 0
     && typeof row.id === 'string' && row.id.length > 0

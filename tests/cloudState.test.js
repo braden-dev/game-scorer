@@ -274,6 +274,36 @@ test('fromRemoteRows ignores malformed records, logs a diagnostic, and keeps val
   }
 })
 
+test('fromRemoteRows quarantines remote names outside the database constraint', () => {
+  const invalidNames = ['', '   ', 'x'.repeat(81)]
+  const people = [
+    { id: 'p_valid', name: 'Valid Person' },
+    ...invalidNames.map((name, index) => ({ id: `p_bad_${index}`, name })),
+  ]
+  const gamePlayers = [
+    { game_id: 'g_valid', person_id: 'p_valid', seat_order: 0, name_snapshot: 'Valid Snapshot' },
+    ...invalidNames.map((name, index) => ({
+      game_id: 'g_valid', person_id: `p_bad_${index}`, seat_order: index + 1, name_snapshot: name,
+    })),
+  ]
+
+  const state = fromRemoteRows({
+    people,
+    games: [{ id: 'g_valid', game_id: 'farkle', settings: {} }],
+    gamePlayers,
+    rounds: [],
+  })
+
+  assert.deepEqual(state.roster, [{ id: 'p_valid', name: 'Valid Person' }])
+  assert.deepEqual(state.games[0].players, [{ id: 'p_valid', name: 'Valid Person' }])
+  assert.deepEqual(toRemoteRows(state).people.map(({ id, name }) => ({ id, name })), [
+    { id: 'p_valid', name: 'Valid Person' },
+  ])
+  assert.deepEqual(toRemoteRows(state).gamePlayers.map(({ person_id, name_snapshot }) => ({ person_id, name_snapshot })), [
+    { person_id: 'p_valid', name_snapshot: 'Valid Snapshot' },
+  ])
+})
+
 test('fromRemoteRows quarantines malformed nested round entries without losing valid games', () => {
   const state = fromRemoteRows({
     people: [
