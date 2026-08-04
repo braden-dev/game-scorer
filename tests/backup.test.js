@@ -50,3 +50,37 @@ test('backup import keeps valid games and skips malformed nested records with a 
   assert.equal(merged.state.games[0].rounds[0].entries.p_valid.score, 100)
   assert.doesNotThrow(() => evaluate(merged.state.games[0]))
 })
+
+test('backup import rejects oversized roster and player snapshot names with visible skip counts', () => {
+  const oversized = 'x'.repeat(81)
+  const backup = parseBackup(JSON.stringify({
+    format: 'gamescorer-backup',
+    version: 1,
+    roster: [
+      { id: 'p_valid', name: 'Valid' },
+      { id: 'p_long', name: oversized },
+    ],
+    games: [
+      {
+        id: 'g_valid', gameId: 'farkle', settings: {},
+        players: [{ id: 'p_valid', name: 'Valid' }], rounds: [],
+      },
+      {
+        id: 'g_long_name', gameId: 'farkle', settings: {},
+        players: [{ id: 'p_long_name', name: oversized }], rounds: [],
+      },
+      {
+        id: 'g_long_snapshot', gameId: 'farkle', settings: {},
+        players: [{ id: 'p_long_snapshot', name: 'Snapshot', nameSnapshot: oversized }], rounds: [],
+      },
+    ],
+  }))
+
+  const merged = mergeBackup({ games: [], roster: [] }, backup)
+
+  assert.deepEqual(merged.state.roster.map(({ id }) => id), ['p_valid'])
+  assert.deepEqual(merged.state.games.map(({ id }) => id), ['g_valid'])
+  assert.equal(merged.skipped.invalidPlayers, 1)
+  assert.equal(merged.skipped.invalidGames, 2)
+  assert.equal(merged.skipped.oversizedNames, 3)
+})

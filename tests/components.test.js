@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import * as esbuild from 'esbuild'
+import { fromRemoteRows } from '../src/lib/cloudState.js'
 
 const fakeReact = `
 export const Fragment = Symbol.for('fragment')
@@ -186,6 +187,40 @@ test('GameView safely renders malformed remote settings with defaults', async ()
       })
       assert.match(textOf(tree), /first to 10,000/)
     }, `target=${String(target)}`)
+  }
+})
+
+test('GameView safely renders a cloud snapshot with malformed nested Dutch Blitz entries', async () => {
+  const GameView = await loadGameView()
+  const state = fromRemoteRows({
+    people: [
+      { id: 'p_bad', name: 'Bad' },
+      { id: 'p_good', name: 'Good' },
+    ],
+    games: [
+      { id: 'g_bad', game_id: 'dutch-blitz', settings: { target: 10, blitzPenalty: 2 } },
+      { id: 'g_good', game_id: 'dutch-blitz', settings: { target: 10, blitzPenalty: 2 } },
+    ],
+    gamePlayers: [
+      { game_id: 'g_bad', person_id: 'p_bad', seat_order: 0, name_snapshot: 'Bad' },
+      { game_id: 'g_good', person_id: 'p_good', seat_order: 0, name_snapshot: 'Good' },
+    ],
+    rounds: [
+      { id: 'r_bad', game_id: 'g_bad', round_index: 0, entries: { p_bad: null } },
+      { id: 'r_good', game_id: 'g_good', round_index: 0, entries: { p_good: { dutch: 10, blitz: 0, blitzed: false } } },
+    ],
+  })
+
+  assert.deepEqual(state.games.find(({ id }) => id === 'g_bad').rounds, [])
+  for (const game of state.games) {
+    assert.doesNotThrow(() => GameView({
+      game,
+      roster: state.roster,
+      onUpdate: () => {},
+      onBack: () => {},
+      onRematch: () => {},
+      onAddToRoster: () => ({ id: 'p_new', name: 'New' }),
+    }))
   }
 })
 

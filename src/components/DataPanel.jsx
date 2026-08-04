@@ -52,6 +52,7 @@ export default function DataPanel({
       if (skipped.players) skippedParts.push(`${skipped.players} player${skipped.players === 1 ? '' : 's'} already here`)
       if (skipped.invalidGames) skippedParts.push(`${skipped.invalidGames} malformed game${skipped.invalidGames === 1 ? '' : 's'} skipped`)
       if (skipped.invalidPlayers) skippedParts.push(`${skipped.invalidPlayers} malformed player${skipped.invalidPlayers === 1 ? '' : 's'} skipped`)
+      if (skipped.oversizedNames) skippedParts.push(`${skipped.oversizedNames} name${skipped.oversizedNames === 1 ? '' : 's'} over 80 characters skipped`)
       const resultParts = [
         parts.length ? `Added ${parts.join(' and ')}` : 'Nothing new',
         ...skippedParts,

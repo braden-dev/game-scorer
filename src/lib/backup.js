@@ -1,5 +1,6 @@
 const FORMAT = 'gamescorer-backup'
 const VERSION = 1
+const MAX_NAME_LENGTH = 80
 const SUPPORTED_GAME_IDS = new Set(['farkle', 'dutch-blitz', 'three-thirteen'])
 const SETTING_TYPES = {
   farkle: {
@@ -20,6 +21,16 @@ function validId(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function validName(value) {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && Array.from(value).length <= MAX_NAME_LENGTH
+}
+
+function oversizedName(value) {
+  return typeof value === 'string' && Array.from(value).length > MAX_NAME_LENGTH
+}
+
 function validSettings(gameId, settings) {
   if (!isRecord(settings)) return false
   return Object.entries(settings).every(([key, value]) => {
@@ -30,12 +41,22 @@ function validSettings(gameId, settings) {
 }
 
 function validPerson(person) {
-  return isRecord(person) && validId(person.id) && typeof person.name === 'string' && person.name.trim().length > 0
+  return isRecord(person) && validId(person.id) && validName(person.name)
 }
 
 function validPlayer(player) {
   return validPerson(player)
     && (player.seatOrder === undefined || Number.isInteger(player.seatOrder))
+    && (player.nameSnapshot === undefined || validName(player.nameSnapshot))
+}
+
+function oversizedNameCount(data) {
+  const rosterCount = (Array.isArray(data?.roster) ? data.roster : [])
+    .filter((person) => oversizedName(person?.name)).length
+  const playerCount = (Array.isArray(data?.games) ? data.games : [])
+    .flatMap((game) => Array.isArray(game?.players) ? game.players : [])
+    .filter((player) => oversizedName(player?.name) || oversizedName(player?.nameSnapshot)).length
+  return rosterCount + playerCount
 }
 
 function validRound(round, playerIds) {
@@ -127,6 +148,7 @@ export function parseBackup(text) {
     invalid: {
       players: data.roster.length - roster.length,
       games: data.games.length - games.length,
+      oversizedNames: oversizedNameCount(data),
     },
   }
 }
@@ -143,6 +165,7 @@ export function mergeBackup(state, backup) {
   const validRoster = sourceRoster.filter(validPerson)
   const invalidGames = (backup?.invalid?.games ?? 0) + sourceGames.length - validGames.length
   const invalidPlayers = (backup?.invalid?.players ?? 0) + sourceRoster.length - validRoster.length
+  const oversizedNames = (backup?.invalid?.oversizedNames ?? 0) + oversizedNameCount({ games: sourceGames, roster: sourceRoster })
   const gameIds = new Set((Array.isArray(state?.games) ? state.games : []).map((g) => g.id))
   const rosterIds = new Set((Array.isArray(state?.roster) ? state.roster : []).map((p) => p.id))
   const rosterNames = new Set((Array.isArray(state?.roster) ? state.roster : []).map((p) => p.name.toLowerCase()))
@@ -164,6 +187,7 @@ export function mergeBackup(state, backup) {
       players: validRoster.length - newPlayers.length,
       invalidGames,
       invalidPlayers,
+      oversizedNames,
     },
   }
 }

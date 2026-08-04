@@ -232,12 +232,14 @@ export function buildLeaderboard(games) {
       || first.personId.localeCompare(second.personId)
     ))
 
+  let rank = 1
   return leaderboard.map((entry, index) => {
     const previous = leaderboard[index - 1]
     const tied = previous
       && entry.wins === previous.wins
       && entry.winRate === previous.winRate
       && entry.averageFinish === previous.averageFinish
-    return { rank: tied ? index : index + 1, ...entry }
+    if (!tied) rank = index + 1
+    return { rank, ...entry }
   })
 }

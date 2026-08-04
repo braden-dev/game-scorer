@@ -107,7 +107,9 @@ function validRemoteRow(kind, row) {
   return typeof row.game_id === 'string' && row.game_id.length > 0
     && typeof row.id === 'string' && row.id.length > 0
     && (isTombstone(row)
-      || ((row.round_index === undefined || Number.isInteger(row.round_index)) && isRecord(row.entries)))
+      || ((row.round_index === undefined || Number.isInteger(row.round_index))
+        && isRecord(row.entries)
+        && Object.values(row.entries).every(isRecord)))
 }
 
 function validRows(kind, input) {

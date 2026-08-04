@@ -274,6 +274,31 @@ test('fromRemoteRows ignores malformed records, logs a diagnostic, and keeps val
   }
 })
 
+test('fromRemoteRows quarantines malformed nested round entries without losing valid games', () => {
+  const state = fromRemoteRows({
+    people: [
+      { id: 'p_bad', name: 'Bad' },
+      { id: 'p_good', name: 'Good' },
+    ],
+    games: [
+      { id: 'g_bad', game_id: 'dutch-blitz', settings: { target: 10, blitzPenalty: 2 } },
+      { id: 'g_good', game_id: 'dutch-blitz', settings: { target: 10, blitzPenalty: 2 } },
+    ],
+    gamePlayers: [
+      { game_id: 'g_bad', person_id: 'p_bad', seat_order: 0, name_snapshot: 'Bad' },
+      { game_id: 'g_good', person_id: 'p_good', seat_order: 0, name_snapshot: 'Good' },
+    ],
+    rounds: [
+      { id: 'r_bad', game_id: 'g_bad', round_index: 0, entries: { p_bad: null } },
+      { id: 'r_good', game_id: 'g_good', round_index: 0, entries: { p_good: { dutch: 10, blitz: 0, blitzed: false } } },
+    ],
+  })
+
+  assert.deepEqual(state.games.map(({ id }) => id), ['g_bad', 'g_good'])
+  assert.deepEqual(state.games.find(({ id }) => id === 'g_bad').rounds, [])
+  assert.equal(state.games.find(({ id }) => id === 'g_good').rounds[0].entries.p_good.dutch, 10)
+})
+
 test('delta rows exclude unchanged local history from later normal mutations', () => {
   const oldGame = {
     id: 'g_local_only', gameId: 'farkle', createdAt: 100, updatedAt: 100,

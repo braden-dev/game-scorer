@@ -321,6 +321,20 @@ test('uses competition ranks for tied leaderboard entries', () => {
   ])
 })
 
+test('keeps a three-way leaderboard tie at rank one and skips to rank four', () => {
+  const games = [
+    farkle('leader-three-way-one', { p1: 100, p2: 100, p3: 100, p4: 50 }),
+    farkle('leader-three-way-two', { p1: 100, p2: 100, p3: 100, p4: 50 }),
+  ]
+
+  assert.deepEqual(buildLeaderboard(games).map(({ personId, rank }) => ({ personId, rank })), [
+    { personId: 'p1', rank: 1 },
+    { personId: 'p2', rank: 1 },
+    { personId: 'p3', rank: 1 },
+    { personId: 'p4', rank: 4 },
+  ])
+})
+
 test('returns stable empty results for null and empty inputs', () => {
   assert.deepEqual(buildPersonStats('p1', null), {
     games: 0,
