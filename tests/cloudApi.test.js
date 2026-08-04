@@ -275,11 +275,18 @@ test('reads every table with stable ordering and page-boundary pagination', asyn
 })
 
 test('softDelete updates timestamps for a composite game player key', async () => {
-  const client = fakeClient({ game_players: [{ game_id: 'g_one', person_id: 'p_one' }] })
+  const client = fakeClient({ game_players: [{
+    game_id: 'g_one', person_id: 'p_one', seat_order: 2, name_snapshot: 'Original',
+    updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
+  }] })
   const updatedAt = '2026-01-03T00:00:00.000Z'
 
-  await createCloudApi(client).softDelete('gamePlayers', { gameId: 'g_one', personId: 'p_one' }, updatedAt)
+  const result = await createCloudApi(client).softDelete('gamePlayers', { gameId: 'g_one', personId: 'p_one' }, updatedAt)
 
+  assert.deepEqual(result, {
+    game_id: 'g_one', person_id: 'p_one', seat_order: 2, name_snapshot: 'Original',
+    updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
+  })
   assert.deepEqual(client.calls.filter((call) => call.operation === 'update'), [{
     table: 'game_players',
     operation: 'update',
@@ -288,10 +295,26 @@ test('softDelete updates timestamps for a composite game player key', async () =
   assert.deepEqual(client.calls.filter((call) => call.operation === 'eq').map((call) => [call.column, call.value]), [
     ['game_id', 'g_one'], ['person_id', 'p_one'],
     ['game_id', 'g_one'], ['person_id', 'p_one'],
+    ['updated_at', '2026-01-02T00:00:00.000Z'],
   ])
   assert.deepEqual(client.calls.filter((call) => call.operation === 'select'), [
     { table: 'game_players', operation: 'select', columns: '*' },
-    { table: 'game_players', operation: 'select', columns: 'game_id,person_id,updated_at,deleted_at' },
+    { table: 'game_players', operation: 'select', columns: '*' },
+  ])
+})
+
+test('softDelete returns complete round tombstone metadata', async () => {
+  const row = {
+    id: 'r_one', game_id: 'g_one', round_index: 3, entries: { p_one: { score: 7 } },
+    updated_at: '2026-01-02T00:00:00.000Z', deleted_at: null,
+  }
+  const client = fakeClient({ rounds: [row] })
+  const result = await createCloudApi(client).softDelete('rounds', 'r_one', '2026-01-03T00:00:00.000Z')
+
+  assert.deepEqual(result, row)
+  assert.deepEqual(client.calls.filter((call) => call.operation === 'select'), [
+    { table: 'rounds', operation: 'select', columns: '*' },
+    { table: 'rounds', operation: 'select', columns: '*' },
   ])
 })
 

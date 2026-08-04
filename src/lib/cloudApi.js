@@ -83,13 +83,6 @@ function selectedKeys(definition) {
   return (definition.keys ?? definition.conflict.split(',').map((column) => [column])).map(([column]) => column).join(',')
 }
 
-function selectedMetadata(definition) {
-  const columns = selectedKeys(definition).split(',')
-  if (definition.table === 'rounds') columns.push('game_id')
-  columns.push('updated_at', 'deleted_at')
-  return columns.join(',')
-}
-
 async function checked(response, table) {
   let result
   try {
@@ -245,7 +238,7 @@ export function createCloudApi(client) {
       query = existing.updated_at === null || existing.updated_at === undefined
         ? query.is('updated_at', null)
         : query.eq('updated_at', existing.updated_at)
-      const result = await checkedWrite(query.select(selectedMetadata(definition)), definition.table, 'soft delete')
+      const result = await checkedWrite(query.select('*'), definition.table, 'soft delete')
       return Array.isArray(result) ? result[0] ?? existing : result ?? existing
     },
   }

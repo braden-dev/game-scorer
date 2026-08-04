@@ -410,7 +410,15 @@ test('keeps a scalar round tombstone after local removal and successful replay',
     fetchSnapshot: async () => gate.promise,
     fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
     upsertRows: async () => {},
-    softDelete: async (...args) => { deleteArgs = args },
+    softDelete: async (...args) => {
+      deleteArgs = args
+      return {
+        id: 'r_removed', game_id: 'g_round', round_index: 0,
+        entries: { p_one: { score: 1 } },
+        updated_at: '2026-01-04T00:00:00.000Z',
+        deleted_at: '2026-01-03T00:00:00.000Z',
+      }
+    },
   }
   const dependencies = { configured: true, api }
   const observed = { value: null }
@@ -467,7 +475,7 @@ test('keeps a scalar round tombstone after local removal and successful replay',
     assert.deepEqual(stored.cache.__cloudMetadata.rounds[0].entries, { p_one: { score: 1 } })
     assert.deepEqual(toRemoteRows(loadSyncStore(globalThis.localStorage).cache).rounds, [{
       id: 'r_removed', game_id: 'g_round', round_index: 0, entries: { p_one: { score: 1 } },
-      updated_at: '2026-01-03T00:00:00.000Z', deleted_at: '2026-01-03T00:00:00.000Z',
+      updated_at: '2026-01-04T00:00:00.000Z', deleted_at: '2026-01-03T00:00:00.000Z',
     }])
   } finally {
     await act(async () => { root.unmount() })
