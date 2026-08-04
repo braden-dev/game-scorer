@@ -84,7 +84,10 @@ function selectedKeys(definition) {
 }
 
 function selectedMetadata(definition) {
-  return `${selectedKeys(definition)},updated_at,deleted_at`
+  const columns = selectedKeys(definition).split(',')
+  if (definition.table === 'rounds') columns.push('game_id')
+  columns.push('updated_at', 'deleted_at')
+  return columns.join(',')
 }
 
 async function checked(response, table) {

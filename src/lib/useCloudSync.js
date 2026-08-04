@@ -17,6 +17,9 @@ import {
 import { uid } from './util.js'
 
 const REMOTE_KEYS = ['people', 'games', 'gamePlayers', 'rounds']
+const RETRY_BASE_DELAY_MS = 50
+const RETRY_MAX_DELAY_MS = 1000
+const MAX_AUTOMATIC_RETRIES = 5
 
 function online() {
   return globalThis.navigator?.onLine !== false
@@ -83,6 +86,26 @@ function applyPendingSoftDeletes(cache, outbox) {
   )
 }
 
+function responseRowsForMutation(mutation, response) {
+  if (!response || typeof response !== 'object') return null
+  if (REMOTE_KEYS.some((key) => Array.isArray(response[key]))) return response
+  const key = remoteKey(mutation?.entity)
+  if (!isSoftDeleteMutation(mutation) || !key) return null
+  return Object.fromEntries(REMOTE_KEYS.map((remoteRowKey) => [
+    remoteRowKey,
+    remoteRowKey === key ? [response] : [],
+  ]))
+}
+
+function mergeMutationResponse(cache, mutation, response) {
+  const rows = responseRowsForMutation(mutation, response)
+  if (!rows) return cache
+  const activeGameId = cache?.activeGameId ?? null
+  const remoteState = fromRemoteRows(rows, activeGameId)
+  const merged = mergeRemoteState(cache, remoteState)
+  return copyCloudMetadata({ ...merged, activeGameId }, merged)
+}
+
 function initialCache(store, state) {
   if (hasCachedState(store)) {
     return copyCloudMetadata({ ...store.cache, activeGameId: state?.activeGameId ?? null }, store.cache)
@@ -99,7 +122,16 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   const storeRef = useRef(null)
   const mountedRef = useRef(false)
   const syncRunnerRef = useRef(null)
+  const syncNowRef = useRef(null)
+  const retryTimerRef = useRef(null)
+  const retryAttemptsRef = useRef(0)
   const apiRef = useRef(dependencies.api ?? (configured ? createCloudApi(supabase) : null))
+
+  const clearRetry = () => {
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
+    retryTimerRef.current = null
+    retryAttemptsRef.current = 0
+  }
 
   useEffect(() => {
     stateRef.current = currentState
@@ -120,14 +152,13 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
 
   const replayMutation = useCallback(async (mutation) => {
     if (isSoftDeleteMutation(mutation)) {
-      await apiRef.current.softDelete(mutation.entity, mutation.entityId, mutationUpdatedAt(mutation))
-      return
+      return apiRef.current.softDelete(mutation.entity, mutation.entityId, mutationUpdatedAt(mutation))
     }
 
     if (mutation?.operation !== 'upsert') throw new Error(`Unknown sync operation: ${mutation?.operation}`)
     const rows = rowsForMutation(mutation)
     if (!rows) throw new Error(`Cannot build rows for sync entity: ${mutation?.entity}`)
-    await apiRef.current.upsertRows(rows)
+    return apiRef.current.upsertRows(rows)
   }, [])
 
   const runSync = useCallback(async ({ initial = false } = {}) => {
@@ -183,10 +214,21 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
 
       let replayedSoftDelete = false
       for (const mutation of [...store.outbox]) {
-        await replayMutation(mutation)
+        const response = await replayMutation(mutation)
         replayedSoftDelete ||= isSoftDeleteMutation(mutation)
         const latestStoreAfterReplay = storeRef.current ?? store
-        store = commitStore(removeMutation(latestStoreAfterReplay, mutation.id), [mutation.id])
+        const latestActiveGameId = activeGameIdForSync(stateRef, latestStoreAfterReplay)
+        const latestCacheForReplay = copyCloudMetadata({
+          ...latestStoreAfterReplay.cache,
+          activeGameId: latestActiveGameId,
+        }, latestStoreAfterReplay.cache)
+        const responseCache = mergeMutationResponse(latestCacheForReplay, mutation, response)
+        store = commitStore({
+          ...removeMutation(latestStoreAfterReplay, mutation.id),
+          cache: responseCache,
+        }, [mutation.id])
+        stateRef.current = responseCache
+        if (mountedRef.current && response) setState(responseCache)
       }
 
       store = commitStore({ ...store, lastError: null })
@@ -198,6 +240,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         if (mountedRef.current) setState(store.cache)
       }
       const pendingAfterReplay = store.outbox.length > 0
+      clearRetry()
       if (mountedRef.current) setStatus(pendingAfterReplay ? 'pending' : 'synced')
       if (pendingAfterReplay) {
         setTimeout(() => {
@@ -211,6 +254,18 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         setError(errorMessage)
         setStatus(online() ? 'error' : 'offline')
       }
+      if (online() && mountedRef.current && !retryTimerRef.current
+        && retryAttemptsRef.current < MAX_AUTOMATIC_RETRIES) {
+        const delay = Math.min(
+          RETRY_BASE_DELAY_MS * (2 ** retryAttemptsRef.current),
+          RETRY_MAX_DELAY_MS,
+        )
+        retryAttemptsRef.current += 1
+        retryTimerRef.current = setTimeout(() => {
+          retryTimerRef.current = null
+          if (mountedRef.current) void syncNowRef.current?.()
+        }, delay)
+      }
     }
   }, [configured, publishStore, replayMutation, setState])
 
@@ -218,6 +273,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     if (!syncRunnerRef.current) syncRunnerRef.current = createInFlightSync(runSync)
     return syncRunnerRef.current(options)
   }, [runSync])
+  syncNowRef.current = syncNow
 
   const enqueueStateMutation = useCallback((mutation) => {
     if (!configured || !mutation) return null
@@ -252,7 +308,10 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
 
   useEffect(() => {
     mountedRef.current = true
-    if (!configured) return () => { mountedRef.current = false }
+    if (!configured) return () => {
+      mountedRef.current = false
+      clearRetry()
+    }
 
     const store = loadSyncStore()
     const cache = initialCache(store, stateRef.current)
@@ -281,6 +340,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     return () => {
       mountedRef.current = false
       removeListeners()
+      clearRetry()
     }
   }, [configured, publishStore, setState, syncNow])
 

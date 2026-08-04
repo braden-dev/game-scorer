@@ -184,11 +184,16 @@ test('keeps a successful local delete tombstoned after remote merge and replay',
   const gate = deferred()
   const updates = []
   let deleted = 0
+  const clientUpdatedAt = '2026-01-03T00:00:00.000Z'
+  const serverUpdatedAt = '2026-01-03T00:00:01.000Z'
   const api = {
     fetchSnapshot: async () => gate.promise,
     fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
     upsertRows: async () => {},
-    softDelete: async () => { deleted += 1 },
+    softDelete: async () => {
+      deleted += 1
+      return { id: 'g_delete', updated_at: serverUpdatedAt, deleted_at: clientUpdatedAt }
+    },
   }
   const dependencies = { configured: true, api }
   const observed = { value: null }
@@ -213,7 +218,7 @@ test('keeps a successful local delete tombstoned after remote merge and replay',
     await act(async () => {
       observed.value.enqueueStateMutation({
         id: 'm_delete', entity: 'games', entityId: 'g_delete', operation: 'softDelete',
-        updatedAt: '2026-01-03T00:00:00.000Z',
+        updatedAt: clientUpdatedAt,
       })
     })
 
@@ -228,7 +233,112 @@ test('keeps a successful local delete tombstoned after remote merge and replay',
     assert.deepEqual(updates.at(-1).games, [])
     const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
     assert.equal(stored.cache.__cloudMetadata.games[0].id, 'g_delete')
-    assert.equal(stored.cache.__cloudMetadata.games[0].deletedAt, '2026-01-03T00:00:00.000Z')
+    assert.equal(stored.cache.__cloudMetadata.games[0].updatedAt, Date.parse(serverUpdatedAt))
+    assert.equal(stored.cache.__cloudMetadata.games[0].deletedAt, clientUpdatedAt)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('applies canonical upsert response metadata to local state immediately', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const updates = []
+  const clientUpdatedAt = '2026-01-03T00:00:00.000Z'
+  const serverUpdatedAt = '2026-01-03T00:00:01.000Z'
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => ({
+      people: [{ id: 'p_server', name: 'Server Name', updated_at: serverUpdatedAt, deleted_at: null }],
+      games: [], gamePlayers: [], rounds: [],
+    }),
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  const setState = (state) => { updates.push(state) }
+  function Harness() {
+    observed.hook = useCloudSync({
+      activeGameId: 'g_active',
+      roster: [{ id: 'p_server', name: 'Server Name', updatedAt: Date.parse(clientUpdatedAt) }],
+      games: [],
+    }, setState, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_server_timestamp', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{
+          id: 'p_server', name: 'Server Name', updated_at: clientUpdatedAt, deleted_at: null,
+        }] } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(updates.at(-1).activeGameId, 'g_active')
+    assert.equal(updates.at(-1).roster[0].updatedAt, Date.parse(serverUpdatedAt))
+    assert.equal(JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1')).outbox.length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('automatically retries a failed replay with bounded backoff', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const firstReplayStarted = deferred()
+  const releaseFirstReplay = deferred()
+  let upsertCalls = 0
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {
+      upsertCalls += 1
+      if (upsertCalls === 1) {
+        firstReplayStarted.resolve()
+        await releaseFirstReplay.promise
+        throw new Error('temporary network failure')
+      }
+      return { people: [], games: [], gamePlayers: [], rounds: [] }
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  const setState = () => {}
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, setState, {
+      configured: true, api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_retry', operation: 'upsert', entity: 'people',
+        payload: { rows: { people: [{ id: 'p_retry', name: 'Retry', updated_at: '2026-01-03T00:00:00.000Z' }] } },
+      })
+      await firstReplayStarted.promise
+    })
+    releaseFirstReplay.resolve()
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)) })
+    assert.equal(upsertCalls, 1)
+    const failedStore = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.equal(failedStore.outbox.length, 1)
+    assert.equal(failedStore.lastError, 'temporary network failure')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 150)) })
+
+    assert.equal(upsertCalls, 2)
+    assert.equal(observed.hook.pendingCount, 0)
+    assert.equal(JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1')).outbox.length, 0)
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
