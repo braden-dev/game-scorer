@@ -2,12 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createCloudApi } from '../src/lib/cloudApi.js'
 
-function fakeClient(rows = {}, errors = {}) {
+function fakeClient(rows = {}, errors = {}, rejections = {}) {
   const calls = []
   const client = {
     calls,
     from(table) {
       const response = { data: rows[table] ?? [], error: errors[table] ?? null }
+      const request = () => rejections[table]
+        ? Promise.reject(rejections[table])
+        : Promise.resolve(response)
       const query = {
         select(columns) {
           calls.push({ table, operation: 'select', columns })
@@ -19,7 +22,7 @@ function fakeClient(rows = {}, errors = {}) {
         },
         upsert(payload, options) {
           calls.push({ table, operation: 'upsert', payload, options })
-          return Promise.resolve(response)
+          return request()
         },
         update(payload) {
           calls.push({ table, operation: 'update', payload })
@@ -30,7 +33,7 @@ function fakeClient(rows = {}, errors = {}) {
           return query
         },
         then(resolve, reject) {
-          return Promise.resolve(response).then(resolve, reject)
+          return request().then(resolve, reject)
         },
       }
       return query
@@ -141,5 +144,14 @@ test('Supabase write errors name the affected table', async () => {
   await assert.rejects(
     createCloudApi(deleteClient).softDelete('rounds', 'r_one', '2026-01-03T00:00:00.000Z'),
     /rounds.*update rejected/,
+  )
+})
+
+test('rejected Supabase requests include table context', async () => {
+  const client = fakeClient({}, {}, { rounds: new Error('network down') })
+
+  await assert.rejects(
+    createCloudApi(client).fetchSnapshot(),
+    /rounds.*network down/,
   )
 })

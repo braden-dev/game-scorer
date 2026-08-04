@@ -443,6 +443,81 @@ export function removeMutation(store, mutationId) {
   }
 }
 
+function metadataEntityKey(group, record) {
+  if (record?.id == null) return null
+  if (group === 'gamePlayers' || group === 'rounds') return `${record.gameId}\u0000${record.id}`
+  return String(record.id)
+}
+
+function compactMetadataRecords(records, group) {
+  const newest = new Map()
+  const unkeyed = []
+  for (const record of records) {
+    const key = metadataEntityKey(group, record)
+    if (key === null) {
+      unkeyed.push(record)
+      continue
+    }
+    const previous = newest.get(key)
+    if (!previous || version(record) >= version(previous)) newest.set(key, record)
+  }
+  return [...newest.values(), ...unkeyed]
+}
+
+export function compactCloudMetadata(metadata = {}) {
+  return {
+    roster: compactMetadataRecords(metadataRecords(metadata, 'roster'), 'roster'),
+    games: compactMetadataRecords(metadataRecords(metadata, 'games'), 'games'),
+    gamePlayers: compactMetadataRecords(metadataRecords(metadata, 'gamePlayers'), 'gamePlayers'),
+    rounds: compactMetadataRecords(metadataRecords(metadata, 'rounds'), 'rounds'),
+  }
+}
+
+export function mergeSyncStore(latestStore, nextStore, removedMutationIds = []) {
+  const latest = normalizeStore(latestStore)
+  const next = normalizeStore(nextStore)
+  const removed = new Set(removedMutationIds)
+  const seen = new Set()
+  const outbox = []
+  for (const mutation of [...next.outbox, ...latest.outbox]) {
+    if (removed.has(mutation?.id) || seen.has(mutation?.id)) continue
+    seen.add(mutation?.id)
+    outbox.push(mutation)
+  }
+  return { ...latest, ...next, outbox }
+}
+
+const SYNC_CURSOR_OVERLAP_MS = 60_000
+
+export function conservativeSyncCursor(previous, startedAt) {
+  const startedMilliseconds = timestamp(startedAt) ?? Date.now()
+  const previousMilliseconds = timestamp(previous)
+  const anchor = previousMilliseconds === null
+    ? startedMilliseconds
+    : Math.min(previousMilliseconds, startedMilliseconds)
+  return new Date(Math.max(0, anchor - SYNC_CURSOR_OVERLAP_MS)).toISOString()
+}
+
+export function createInFlightSync(operation) {
+  let inFlight = null
+  return (...args) => {
+    if (inFlight) return inFlight
+    inFlight = Promise.resolve()
+      .then(() => operation(...args))
+      .finally(() => { inFlight = null })
+    return inFlight
+  }
+}
+
+export function registerSyncListeners({ target, document, onRefresh, onOnline = onRefresh, onVisibility = onRefresh }) {
+  target?.addEventListener?.('online', onOnline)
+  document?.addEventListener?.('visibilitychange', onVisibility)
+  return () => {
+    target?.removeEventListener?.('online', onOnline)
+    document?.removeEventListener?.('visibilitychange', onVisibility)
+  }
+}
+
 export function mergeRemoteState(localState, remoteState, lastSyncAt = null) {
   const local = normalizeCache(localState)
   const remote = remoteState && typeof remoteState === 'object' ? remoteState : {}
@@ -461,12 +536,12 @@ export function mergeRemoteState(localState, remoteState, lastSyncAt = null) {
   }
 
   Object.defineProperty(merged, CLOUD_METADATA, {
-    value: {
+    value: compactCloudMetadata({
       roster: [...metadataRecords(localMetadata, 'roster'), ...metadataRecords(remoteMetadata, 'roster')],
       games: [...metadataRecords(localMetadata, 'games'), ...metadataRecords(remoteMetadata, 'games')],
       gamePlayers: [...metadataRecords(localMetadata, 'gamePlayers'), ...metadataRecords(remoteMetadata, 'gamePlayers')],
       rounds: [...metadataRecords(localMetadata, 'rounds'), ...metadataRecords(remoteMetadata, 'rounds')],
-    },
+    }),
     configurable: true,
   })
   return merged

@@ -18,7 +18,12 @@ function providerMessage(error) {
 }
 
 async function checked(response, table) {
-  const result = await response
+  let result
+  try {
+    result = await response
+  } catch (error) {
+    throw new Error(`Supabase ${table}: ${providerMessage(error)}`)
+  }
   if (result?.error) throw new Error(`Supabase ${table}: ${providerMessage(result.error)}`)
   return result?.data ?? null
 }

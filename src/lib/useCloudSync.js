@@ -3,9 +3,13 @@ import { cloudConfigured, supabase } from './supabase.js'
 import { createCloudApi } from './cloudApi.js'
 import { copyCloudMetadata, fromRemoteRows, hasCloudMetadata, toRemoteRows } from './cloudState.js'
 import {
+  conservativeSyncCursor,
+  createInFlightSync,
   enqueueMutation,
   loadSyncStore,
+  mergeSyncStore,
   mergeRemoteState,
+  registerSyncListeners,
   removeMutation,
   saveSyncStore,
 } from './sync.js'
@@ -82,7 +86,7 @@ export function useCloudSync(currentState, setState) {
   const stateRef = useRef(currentState)
   const storeRef = useRef(null)
   const mountedRef = useRef(false)
-  const inFlightRef = useRef(null)
+  const syncRunnerRef = useRef(null)
   const apiRef = useRef(configured ? createCloudApi(supabase) : null)
 
   useEffect(() => {
@@ -93,6 +97,14 @@ export function useCloudSync(currentState, setState) {
     storeRef.current = store
     setPendingCount(store.outbox.length)
   }, [])
+
+  const commitStore = useCallback((nextStore, removedMutationIds = []) => {
+    const latestStore = storeRef.current ?? nextStore
+    const committed = mergeSyncStore(latestStore, nextStore, removedMutationIds)
+    publishStore(committed)
+    saveSyncStore(committed)
+    return committed
+  }, [publishStore])
 
   const replayMutation = useCallback(async (mutation) => {
     if (mutation?.operation === 'softDelete' || mutation?.operation === 'delete') {
@@ -117,6 +129,9 @@ export function useCloudSync(currentState, setState) {
     }
 
     let store = storeRef.current ?? loadSyncStore()
+    const syncStartedAt = new Date().toISOString()
+    const syncCursor = conservativeSyncCursor(store.lastSyncAt, syncStartedAt)
+    const previousSyncAt = store.lastSyncAt
     const activeGameId = stateRef.current?.activeGameId ?? null
     const baseCache = copyCloudMetadata(
       copyCloudMetadata({ ...cacheForState(stateRef.current), ...store.cache, activeGameId }, store.cache),
@@ -134,38 +149,32 @@ export function useCloudSync(currentState, setState) {
         ? await apiRef.current.fetchSnapshot()
         : await apiRef.current.fetchRowsUpdatedSince(store.lastSyncAt)
       const remoteState = fromRemoteRows(rows, activeGameId)
-      const mergedState = mergeRemoteState(store.cache, remoteState, store.lastSyncAt)
+      const latestStore = storeRef.current ?? store
+      const mergedState = mergeRemoteState(latestStore.cache, remoteState, previousSyncAt)
       const mergedCache = copyCloudMetadata({
         ...mergedState,
         activeGameId,
       }, mergedState)
-      store = {
-        ...store,
+      store = commitStore({
+        ...latestStore,
         cache: mergedCache,
-        lastSyncAt: new Date().toISOString(),
+        lastSyncAt: syncCursor,
         lastError: null,
-      }
+      })
       stateRef.current = mergedCache
       if (mountedRef.current) setState(mergedCache)
-      publishStore(store)
-      saveSyncStore(store)
 
       for (const mutation of [...store.outbox]) {
         await replayMutation(mutation)
-        store = removeMutation(store, mutation.id)
-        publishStore(store)
-        saveSyncStore(store)
+        const latestStoreAfterReplay = storeRef.current ?? store
+        store = commitStore(removeMutation(latestStoreAfterReplay, mutation.id), [mutation.id])
       }
 
-      store = { ...store, lastError: null }
-      publishStore(store)
-      saveSyncStore(store)
+      store = commitStore({ ...store, lastError: null })
       if (mountedRef.current) setStatus(store.outbox.length ? 'pending' : 'synced')
     } catch (syncError) {
       const errorMessage = messageFor(syncError)
-      store = { ...store, lastError: errorMessage }
-      publishStore(store)
-      saveSyncStore(store)
+      store = commitStore({ ...(storeRef.current ?? store), lastError: errorMessage })
       if (mountedRef.current) {
         setError(errorMessage)
         setStatus(online() ? 'error' : 'offline')
@@ -174,12 +183,8 @@ export function useCloudSync(currentState, setState) {
   }, [configured, publishStore, replayMutation, setState])
 
   const syncNow = useCallback((options) => {
-    if (inFlightRef.current) return inFlightRef.current
-    const promise = runSync(options).finally(() => {
-      inFlightRef.current = null
-    })
-    inFlightRef.current = promise
-    return promise
+    if (!syncRunnerRef.current) syncRunnerRef.current = createInFlightSync(runSync)
+    return syncRunnerRef.current(options)
   }, [runSync])
 
   const enqueueStateMutation = useCallback((mutation) => {
@@ -193,12 +198,11 @@ export function useCloudSync(currentState, setState) {
       createdAt: mutation.createdAt ?? Date.now(),
       ...mutation,
     })
-    publishStore(next)
-    saveSyncStore(next)
+    commitStore(next)
     if (mountedRef.current) setStatus('pending')
     if (online()) void syncNow()
     return next
-  }, [configured, publishStore, syncNow])
+  }, [commitStore, configured, syncNow])
 
   useEffect(() => {
     mountedRef.current = true
@@ -221,13 +225,16 @@ export function useCloudSync(currentState, setState) {
     const onVisibilityChange = () => {
       if (globalThis.document?.visibilityState === 'visible') refresh()
     }
-    globalThis.addEventListener?.('online', refresh)
-    globalThis.document?.addEventListener?.('visibilitychange', onVisibilityChange)
+    const removeListeners = registerSyncListeners({
+      target: globalThis,
+      document: globalThis.document,
+      onOnline: refresh,
+      onVisibility: onVisibilityChange,
+    })
 
     return () => {
       mountedRef.current = false
-      globalThis.removeEventListener?.('online', refresh)
-      globalThis.document?.removeEventListener?.('visibilitychange', onVisibilityChange)
+      removeListeners()
     }
   }, [configured, publishStore, setState, syncNow])
 
