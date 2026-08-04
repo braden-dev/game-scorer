@@ -500,3 +500,49 @@ test('mounts the hook safely in local mode when cloud is not configured', async 
     browser.restore()
   }
 })
+
+test('caches an immediately queued next state before React renders it', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const gate = deferred()
+  const observed = { hook: null }
+  const api = {
+    fetchSnapshot: async () => gate.promise,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    const nextState = {
+      activeGameId: 'g_local',
+      roster: [{ id: 'p_one', name: 'One' }],
+      games: [],
+    }
+    observed.hook.enqueueStateMutation({
+      id: 'm_next_state',
+      entity: 'scorebook',
+      operation: 'upsert',
+      state: nextState,
+      payload: { rows: toRemoteRows(nextState) },
+    })
+
+    const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.deepEqual(stored.cache.roster, nextState.roster)
+    assert.equal(stored.cache.activeGameId, 'g_local')
+    gate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
+    await act(async () => { await gate.promise })
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})

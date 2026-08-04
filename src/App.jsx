@@ -1,21 +1,64 @@
-import { useEffect, useState } from 'react'
-import { loadState, saveState } from './lib/storage.js'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { loadState, saveState, saveStateToCloudCache } from './lib/storage.js'
 import { uid } from './lib/util.js'
 import { getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
+import { cloudConfigured } from './lib/supabase.js'
+import { loadSyncStore, saveSyncStore } from './lib/sync.js'
+import { toRemoteRows } from './lib/cloudState.js'
+import { useCloudSync } from './lib/useCloudSync.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
 import GameView from './components/GameView.jsx'
 import DataPanel from './components/DataPanel.jsx'
 import InstallBanner from './components/InstallBanner.jsx'
+import MigrationPanel from './components/MigrationPanel.jsx'
 
 export default function App() {
   const [state, setState] = useState(() => migrateState(loadState()))
   const [newGameId, setNewGameId] = useState(null)
   const [showData, setShowData] = useState(false)
+  const [initialMigrationCompleted, setInitialMigrationCompleted] = useState(
+    () => loadSyncStore().initialMigrationCompleted,
+  )
+  const stateRef = useRef(state)
   const install = useInstallPrompt()
+  const configured = cloudConfigured()
+  const sync = useCloudSync(state, setState)
 
-  useEffect(() => { saveState(state) }, [state])
+  useEffect(() => {
+    stateRef.current = state
+    saveState(state)
+  }, [state])
+
+  const fullStateMutation = useCallback((nextState) => ({
+    id: uid('m'),
+    entity: 'scorebook',
+    operation: 'upsert',
+    payload: { rows: toRemoteRows(nextState) },
+  }), [])
+
+  /**
+   * All cloud-visible changes pass through this boundary. Navigation remains
+   * a plain local state change below, so a remote response can never reopen a
+   * game on the wrong device.
+   */
+  const applyMutation = useCallback((updater, mutationFactory) => {
+    const previous = stateRef.current
+    const next = updater(previous)
+    stateRef.current = next
+    setState(next)
+    saveState(next)
+
+    if (configured) {
+      saveStateToCloudCache(next)
+      const mutation = typeof mutationFactory === 'function'
+        ? mutationFactory(next, previous)
+        : mutationFactory
+      if (mutation) sync.enqueueStateMutation({ ...mutation, state: next })
+    }
+    return next
+  }, [configured, sync])
 
   // A record for a game this build doesn't know about would crash every screen
   // that scores it. That happens for real: an installed PWA can be running a
@@ -26,12 +69,24 @@ export default function App() {
 
   const addToRoster = (name) => {
     const person = { id: uid('p'), name }
-    setState((prev) => ({ ...prev, roster: [...prev.roster, person] }))
+    applyMutation(
+      (prev) => ({ ...prev, roster: [...prev.roster, person] }),
+      fullStateMutation,
+    )
     return person
   }
 
   const removeFromRoster = (id) =>
-    setState((prev) => ({ ...prev, roster: prev.roster.filter((p) => p.id !== id) }))
+    applyMutation(
+      (prev) => ({ ...prev, roster: prev.roster.filter((p) => p.id !== id) }),
+      () => ({
+        id: uid('m'),
+        entity: 'people',
+        entityId: id,
+        operation: 'softDelete',
+        updatedAt: Date.now(),
+      }),
+    )
 
   const startGame = (gameId, players, settings) => {
     const game = {
@@ -44,7 +99,10 @@ export default function App() {
       rounds: [],
       finishedAt: null,
     }
-    setState((prev) => ({ ...prev, games: [...prev.games, game], activeGameId: game.id }))
+    applyMutation(
+      (prev) => ({ ...prev, games: [...prev.games, game], activeGameId: game.id }),
+      fullStateMutation,
+    )
     setNewGameId(null)
   }
 
@@ -57,10 +115,31 @@ export default function App() {
       updatedAt: Date.now(),
       finishedAt: status.finished ? (updated.finishedAt || Date.now()) : null,
     }
-    setState((prev) => ({
-      ...prev,
-      games: prev.games.map((g) => (g.id === next.id ? next : g)),
-    }))
+    applyMutation(
+      (prev) => ({
+        ...prev,
+        games: prev.games.map((g) => (g.id === next.id ? next : g)),
+      }),
+      (nextState, previousState) => {
+        const previousGame = previousState.games.find((game) => game.id === next.id)
+        const removedRound = previousGame?.rounds?.find(
+          (round) => !next.rounds.some((candidate) => candidate.id === round.id),
+        )
+        if (!removedRound) return fullStateMutation(nextState)
+        return {
+          id: uid('m'),
+          entity: 'rounds',
+          entityId: removedRound.id,
+          operation: 'softDelete',
+          updatedAt: next.updatedAt,
+          payload: {
+            gameId: next.id,
+            roundIndex: previousGame.rounds.indexOf(removedRound),
+            entries: removedRound.entries,
+          },
+        }
+      },
+    )
   }
 
   const deleteGame = (id) => {
@@ -68,16 +147,56 @@ export default function App() {
     const def = game ? getGameDef(game.gameId) : null
     const label = def ? `this ${def.name} game` : 'this game'
     if (!window.confirm(`Delete ${label}? This can't be undone.`)) return
-    setState((prev) => ({
-      ...prev,
-      games: prev.games.filter((g) => g.id !== id),
-      activeGameId: prev.activeGameId === id ? null : prev.activeGameId,
-    }))
+    applyMutation(
+      (prev) => ({
+        ...prev,
+        games: prev.games.filter((g) => g.id !== id),
+        activeGameId: prev.activeGameId === id ? null : prev.activeGameId,
+      }),
+      () => ({
+        id: uid('m'),
+        entity: 'games',
+        entityId: id,
+        operation: 'softDelete',
+        updatedAt: Date.now(),
+      }),
+    )
   }
 
   const rematch = () => {
     if (!activeGame) return
     startGame(activeGame.gameId, activeGame.players, { ...activeGame.settings })
+  }
+
+  const keepLocalForNow = () => {
+    const store = loadSyncStore()
+    saveSyncStore({ ...store, initialMigrationCompleted: true })
+    setInitialMigrationCompleted(true)
+  }
+
+  const publishMigration = async () => {
+    const existingMigration = loadSyncStore().outbox.find((mutation) => mutation.initialMigration)
+    const migrationId = existingMigration?.id ?? uid('migration')
+    if (!existingMigration) {
+      applyMutation(
+        (prev) => prev,
+        (nextState) => ({
+          id: migrationId,
+          entity: 'scorebook',
+          operation: 'upsert',
+          initialMigration: true,
+          payload: { rows: toRemoteRows(nextState) },
+        }),
+      )
+    }
+    await sync.syncNow()
+    const store = loadSyncStore()
+    if (store.outbox.some((mutation) => mutation.id === migrationId)) {
+      throw new Error(store.lastError || 'Could not publish local history yet.')
+    }
+
+    saveSyncStore({ ...store, initialMigrationCompleted: true })
+    setInitialMigrationCompleted(true)
   }
 
   if (newGameId) {
@@ -120,8 +239,21 @@ export default function App() {
         <DataPanel
           state={state}
           install={install}
-          onImport={(imported) => setState(migrateState(imported))}
+          sync={configured ? sync : null}
+          migrationPending={configured && !initialMigrationCompleted}
+          onPublishMigration={publishMigration}
+          onImport={(imported) => applyMutation(
+            () => migrateState(imported),
+            fullStateMutation,
+          )}
           onClose={() => setShowData(false)}
+        />
+      )}
+      {configured && !initialMigrationCompleted && (state.games.length > 0 || state.roster.length > 0) && (
+        <MigrationPanel
+          state={state}
+          onPublish={publishMigration}
+          onKeepLocal={keepLocalForNow}
         />
       )}
     </>

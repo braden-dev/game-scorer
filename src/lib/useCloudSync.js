@@ -279,16 +279,18 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
   const enqueueStateMutation = useCallback((mutation) => {
     if (!configured || !mutation) return null
     const store = storeRef.current ?? loadSyncStore()
+    const { state: mutationState, ...mutationDetails } = mutation
     const nextMutation = {
       id: mutation.id ?? uid('m'),
       createdAt: mutation.createdAt ?? Date.now(),
-      ...mutation,
+      ...mutationDetails,
     }
-    const nextCache = cacheForState(stateRef.current, store.cache)
+    const nextCache = cacheForState(mutationState ?? stateRef.current, store.cache)
     const next = enqueueMutation({
       ...store,
       cache: nextCache,
     }, nextMutation)
+    if (mutationState) stateRef.current = nextCache
     commitStore(next)
     if (isSoftDeleteMutation(nextMutation)) {
       stateRef.current = next.cache

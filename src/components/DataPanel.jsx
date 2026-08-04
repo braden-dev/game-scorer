@@ -2,10 +2,20 @@ import { useRef, useState } from 'react'
 import Modal from './Modal.jsx'
 import { mergeBackup, parseBackup, shareOrDownloadBackup } from '../lib/backup.js'
 import { isIos, isStandalone } from '../lib/useInstallPrompt.js'
+import SyncStatus from './SyncStatus.jsx'
 
-export default function DataPanel({ state, onImport, onClose, install }) {
+export default function DataPanel({
+  state,
+  onImport,
+  onClose,
+  install,
+  sync,
+  migrationPending = false,
+  onPublishMigration,
+}) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState(null)
+  const [publishing, setPublishing] = useState(false)
   const fileRef = useRef(null)
 
   const gameCount = state.games.length
@@ -45,6 +55,30 @@ export default function DataPanel({ state, onImport, onClose, install }) {
     }
   }
 
+  const doCloudExport = async () => {
+    setError(null)
+    try {
+      const result = await shareOrDownloadBackup(state)
+      if (result === 'cancelled') setStatus(null)
+      else setStatus(result === 'shared' ? 'Cloud backup shared.' : 'Cloud backup downloaded.')
+    } catch {
+      setError("Couldn't create the cloud backup file.")
+    }
+  }
+
+  const doPublishMigration = async () => {
+    setError(null)
+    setPublishing(true)
+    try {
+      await onPublishMigration()
+      setStatus('Local history published.')
+    } catch (publishError) {
+      setError(publishError instanceof Error ? publishError.message : String(publishError))
+    } finally {
+      setPublishing(false)
+    }
+  }
+
   return (
     <Modal title="Data & backup" onClose={onClose}>
       <p className="panel-stat">
@@ -53,8 +87,23 @@ export default function DataPanel({ state, onImport, onClose, install }) {
         <strong>{state.roster.length}</strong> player{state.roster.length === 1 ? '' : 's'} saved
       </p>
 
+      {sync && (
+        <div className="data-status">
+          <SyncStatus {...sync} />
+        </div>
+      )}
+
+      {sync && migrationPending && onPublishMigration && (
+        <div className="data-actions">
+          <button type="button" className="btn ghost" onClick={doPublishMigration} disabled={publishing}>
+            Publish local history
+          </button>
+        </div>
+      )}
+
       <div className="data-actions">
         <button type="button" className="btn primary" onClick={doExport}>Export backup</button>
+        {sync && <button type="button" className="btn primary" onClick={doCloudExport}>Export cloud backup</button>}
         <button type="button" className="btn ghost" onClick={() => fileRef.current?.click()}>Import backup</button>
         <input
           ref={fileRef}
@@ -72,6 +121,13 @@ export default function DataPanel({ state, onImport, onClose, install }) {
         Importing merges — it adds games this device doesn't have and never overwrites what's
         already here.
       </p>
+
+      {sync && (
+        <p className="hint">
+          The shared scorebook is public and editable by anyone with its link. This device keeps a
+          local cache for offline play, while Export cloud backup saves the reconciled shared view.
+        </p>
+      )}
 
       <h4 className="data-head">Keeping your history safe</h4>
       <p className="hint">

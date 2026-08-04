@@ -1,3 +1,6 @@
+import { mergeCloudCache } from './cloudState.js'
+import { loadSyncStore, saveSyncStore } from './sync.js'
+
 const KEY = 'gamescorer.v1'
 
 const EMPTY = { games: [], roster: [], activeGameId: null }
@@ -33,4 +36,19 @@ export function saveState(state, storage) {
   } catch (err) {
     console.warn('Could not save games to localStorage.', err)
   }
+}
+
+/**
+ * Keep the cloud cache in the same nested shape the app renders. The active
+ * game is intentionally retained here for device-local navigation; only
+ * toRemoteRows() crosses the cloud boundary and omits it.
+ */
+export function saveStateToCloudCache(state, storage) {
+  const store = loadSyncStore(storage)
+  const nextStore = {
+    ...store,
+    cache: mergeCloudCache(store.cache, state),
+  }
+  saveSyncStore(nextStore, storage)
+  return nextStore
 }
