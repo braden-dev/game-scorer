@@ -123,6 +123,16 @@ function setMetadata(state, metadata) {
   return state
 }
 
+export function copyCloudMetadata(target, source) {
+  const metadata = source?.[CLOUD_METADATA]
+  if (metadata === undefined) return target
+  Object.defineProperty(target, CLOUD_METADATA, {
+    value: metadata,
+    configurable: true,
+  })
+  return target
+}
+
 function metadataRecords(metadata, key) {
   return rows(metadata?.[key])
 }

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fromRemoteRows, normalizeName, toRemoteRows } from '../src/lib/cloudState.js'
+import { copyCloudMetadata, fromRemoteRows, normalizeName, toRemoteRows } from '../src/lib/cloudState.js'
 
 test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
@@ -154,6 +154,22 @@ test('handles malformed and out-of-range timestamps without throwing', () => {
   assert.equal(state.games[0].createdAt, null)
   assert.equal(state.games[0].updatedAt, null)
   assert.equal(state.games[0].finishedAt, null)
+})
+
+test('copies non-enumerable cloud metadata onto cache-shaped state updates', () => {
+  const source = fromRemoteRows({
+    people: [{ id: 'p_one', name: 'One' }],
+    games: [{ id: 'g_one', game_id: 'farkle', settings: {} }],
+    gamePlayers: [{
+      game_id: 'g_one', person_id: 'p_removed', seat_order: 0, name_snapshot: 'Removed',
+      updated_at: '2026-01-02T00:00:00.000Z', deleted_at: '2026-01-02T00:00:00.000Z',
+    }],
+    rounds: [],
+  })
+  const updated = copyCloudMetadata({ ...source, activeGameId: null }, source)
+
+  assert.equal(Object.prototype.propertyIsEnumerable.call(updated, Symbol.for('gamescorer.cloudMetadata')), false)
+  assert.equal(toRemoteRows(updated).gamePlayers[0].deleted_at, '2026-01-02T00:00:00.000Z')
 })
 
 test('round-trips player versions, player tombstones, and standalone person creation time', () => {

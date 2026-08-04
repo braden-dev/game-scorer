@@ -4,7 +4,7 @@ export default function SyncStatus({ status, pendingCount = 0, syncNow }) {
   if (status === 'error') {
     return (
       <div role="status" aria-live="polite">
-        <span>Couldn&apos;t sync</span>{' '}
+        <span>Couldn&apos;t sync · </span>
         <button type="button" onClick={syncNow}>Retry</button>
       </div>
     )
