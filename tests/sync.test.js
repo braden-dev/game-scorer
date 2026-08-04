@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
+import { fromRemoteRows, hasCloudMetadata, toRemoteRows } from '../src/lib/cloudState.js'
 import { loadState, saveState } from '../src/lib/storage.js'
 import {
   enqueueMutation,
@@ -35,6 +35,37 @@ test('loads safe defaults for missing and invalid sync data', () => {
   storage.setItem('gamescorer.cloud.v1', '{not json')
   assert.deepEqual(loadSyncStore(storage).outbox, [])
   assert.equal(loadSyncStore(storage).lastError, null)
+})
+
+test('recognizes a valid cache containing only tombstone metadata', () => {
+  const storage = new MemoryStorage()
+  const cache = fromRemoteRows({
+    people: [{
+      id: 'p_deleted', name: 'Deleted', updated_at: '2026-01-02T00:00:00.000Z',
+      deleted_at: '2026-01-02T00:00:00.000Z',
+    }],
+    games: [{
+      id: 'g_deleted', game_id: 'farkle', updated_at: '2026-01-02T00:00:00.000Z',
+      deleted_at: '2026-01-02T00:00:00.000Z', settings: {},
+    }],
+    gamePlayers: [],
+    rounds: [],
+  }, 'g_local')
+  saveSyncStore({
+    cache,
+    outbox: [],
+    lastSyncAt: null,
+    lastError: null,
+    initialMigrationCompleted: false,
+  }, storage)
+
+  const reloaded = loadSyncStore(storage).cache
+  assert.deepEqual(reloaded.games, [])
+  assert.deepEqual(reloaded.roster, [])
+  assert.equal(reloaded.activeGameId, 'g_local')
+  assert.equal(hasCloudMetadata(reloaded), true)
+  assert.equal(reloaded[Symbol.for('gamescorer.cloudMetadata')].roster[0].deletedAt, '2026-01-02T00:00:00.000Z')
+  assert.equal(reloaded[Symbol.for('gamescorer.cloudMetadata')].games[0].deletedAt, '2026-01-02T00:00:00.000Z')
 })
 
 test('enqueues and removes mutations without mutating inputs or duplicating IDs', () => {

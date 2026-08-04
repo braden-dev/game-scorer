@@ -133,6 +133,10 @@ export function copyCloudMetadata(target, source) {
   return target
 }
 
+export function hasCloudMetadata(state) {
+  return state?.[CLOUD_METADATA] !== undefined
+}
+
 function metadataRecords(metadata, key) {
   return rows(metadata?.[key])
 }

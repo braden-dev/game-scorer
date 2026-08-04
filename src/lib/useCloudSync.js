@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { cloudConfigured, supabase } from './supabase.js'
 import { createCloudApi } from './cloudApi.js'
-import { copyCloudMetadata, fromRemoteRows, toRemoteRows } from './cloudState.js'
+import { copyCloudMetadata, fromRemoteRows, hasCloudMetadata, toRemoteRows } from './cloudState.js'
 import {
   enqueueMutation,
   loadSyncStore,
@@ -27,7 +27,7 @@ function isoTimestamp(value) {
 }
 
 function hasCachedState(store) {
-  return store.cache.games.length > 0 || store.cache.roster.length > 0
+  return store.cache.games.length > 0 || store.cache.roster.length > 0 || hasCloudMetadata(store.cache)
 }
 
 function cacheForState(state) {
