@@ -72,9 +72,13 @@ function mutableClient(initialRows = {}, hooks = {}) {
   const tables = Object.fromEntries(Object.entries(initialRows).map(([table, rows]) => [table, rows.map((row) => ({ ...row }))]))
   const calls = []
   const timestampColumns = new Set(['created_at', 'updated_at', 'deleted_at', 'finished_at'])
-  const normalizeInsertedRow = (row) => {
-    if (!hooks.normalizeTimestamps) return { ...row }
-    return Object.fromEntries(Object.entries(row).map(([column, value]) => {
+  const normalizeInsertedRow = (table, row) => {
+    const inserted = { ...row }
+    for (const [column, value] of Object.entries(hooks.serverDefaults?.[table] ?? {})) {
+      if (!(column in inserted)) inserted[column] = value
+    }
+    if (!hooks.normalizeTimestamps) return inserted
+    return Object.fromEntries(Object.entries(inserted).map(([column, value]) => {
       if (!timestampColumns.has(column) || value === null || value === undefined) return [column, value]
       const milliseconds = Date.parse(String(value))
       if (!Number.isFinite(milliseconds)) return [column, value]
@@ -147,7 +151,7 @@ function mutableClient(initialRows = {}, hooks = {}) {
             if (action === 'update') {
               for (const row of matches) Object.assign(row, payload)
             } else if (action === 'insert') {
-              tableRows.push(...payload.map(normalizeInsertedRow))
+              tableRows.push(...payload.map((row) => normalizeInsertedRow(table, row)))
               data = payload
             } else if (action === 'upsert') {
               hooks.beforeUpsert?.(table, payload, tableRows)
@@ -157,7 +161,7 @@ function mutableClient(initialRows = {}, hooks = {}) {
                   if (!query.upsertOptions?.ignoreDuplicates) Object.assign(existing, nextRow)
                   return query.upsertOptions?.ignoreDuplicates ? [] : [nextRow]
                 }
-                tableRows.push(normalizeInsertedRow(nextRow))
+                tableRows.push(normalizeInsertedRow(table, nextRow))
                 return [nextRow]
               })
             }
@@ -236,6 +240,59 @@ test('accepts a newly inserted row after PostgreSQL normalizes timestamp formatt
 
   assert.equal(result.games[0].id, 'g_timestamp_round_trip')
   assert.equal(client.rows('games')[0].created_at, '2026-08-04T18:26:03.103000+00:00')
+})
+
+test('accepts an equivalent inserted row when PostgreSQL adds server defaults', async () => {
+  const client = mutableClient({}, {
+    normalizeTimestamps: true,
+    serverDefaults: { games: { server_default: 'postgres-default' } },
+  })
+
+  const result = await createCloudApi(client).upsertRows({ games: [{
+    id: 'g_server_default',
+    game_id: 'dutch-blitz',
+    created_at: '2026-08-04T18:26:03.103Z',
+    updated_at: '2026-08-04T18:26:03.103Z',
+    finished_at: null,
+    settings: { target: 75, blitzPenalty: 2 },
+    deleted_at: null,
+  }] })
+
+  assert.equal(result.games[0].server_default, 'postgres-default')
+  assert.equal(client.rows('games')[0].server_default, 'postgres-default')
+})
+
+test('compares non-UTC timestamps at application millisecond precision', async () => {
+  const client = mutableClient({}, { normalizeTimestamps: true })
+
+  await createCloudApi(client).upsertRows({ games: [{
+    id: 'g_timestamp_offset',
+    game_id: 'dutch-blitz',
+    created_at: '2026-08-04T13:26:03.103-05:00',
+    updated_at: '2026-08-04T13:26:03.103-05:00',
+    finished_at: '2026-08-04T13:27:03.103-05:00',
+    settings: { target: 75, blitzPenalty: 2 },
+    deleted_at: null,
+  }] })
+
+  assert.equal(client.rows('games')[0].created_at, '2026-08-04T18:26:03.103000+00:00')
+  assert.equal(client.rows('games')[0].finished_at, '2026-08-04T18:27:03.103000+00:00')
+})
+
+test('does not treat a malformed timestamp as null during equal-version comparison', async () => {
+  const updatedAt = '2026-08-04T18:26:03.103Z'
+  const client = mutableClient({ people: [{
+    id: 'p_invalid_timestamp', name: 'Remote', created_at: null, updated_at: updatedAt, deleted_at: null,
+  }] })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({ people: [{
+      id: 'p_invalid_timestamp', name: 'Remote', created_at: 'not-a-timestamp',
+      updated_at: updatedAt, deleted_at: null,
+    }] }),
+    /people.*conflicting equal-version row/,
+  )
+  assert.equal(client.rows('people')[0].created_at, null)
 })
 
 test('fetchRowsUpdatedSince filters every table without filtering tombstones', async () => {

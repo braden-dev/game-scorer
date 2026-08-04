@@ -27,6 +27,16 @@ function timestamp(value) {
   return Number.isFinite(milliseconds) ? milliseconds : null
 }
 
+function canonicalTimestamp(value) {
+  if (value === null || value === undefined) return null
+  const milliseconds = timestamp(value)
+  if (milliseconds === null) return { invalidTimestamp: String(value) }
+
+  // Cloud timestamps use millisecond application precision. PostgreSQL's
+  // six-digit fractional formatting is intentionally reduced to that value.
+  return Math.trunc(milliseconds)
+}
+
 function rowVersion(row) {
   const versions = [timestamp(row?.updated_at), timestamp(row?.deleted_at)].filter((value) => value !== null)
   return versions.length ? Math.max(...versions) : Number.NEGATIVE_INFINITY
@@ -57,13 +67,20 @@ function canonicalPayload(row) {
     .map((key) => [key, row[key] ?? null]))
 }
 
-function canonicalComparablePayload(row) {
-  return Object.fromEntries(Object.entries(canonicalPayload(row))
-    .map(([key, value]) => [key, TIMESTAMP_COLUMNS.has(key) ? timestamp(value) : value]))
+function canonicalComparablePayload(row, keys) {
+  return Object.fromEntries(keys.map((key) => {
+    const value = row?.[key] ?? null
+    return [key, TIMESTAMP_COLUMNS.has(key) ? canonicalTimestamp(value) : value]
+  }))
 }
 
 function sameCanonicalPayload(existing, attempted) {
-  return samePayload(canonicalComparablePayload(existing), canonicalComparablePayload(attempted))
+  const requested = canonicalPayload(attempted)
+  const keys = Object.keys(requested)
+  return samePayload(
+    canonicalComparablePayload(existing, keys),
+    canonicalComparablePayload(attempted, keys),
+  )
 }
 
 function restorePayload(row) {
