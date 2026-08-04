@@ -127,8 +127,16 @@ function isSoftDeleteMutation(mutation) {
   return mutation?.operation === 'softDelete' || mutation?.operation === 'delete'
 }
 
+function isConflictMutation(mutation) {
+  return mutation?.status === 'conflict'
+}
+
+function isReplayableMutation(mutation) {
+  return !isConflictMutation(mutation)
+}
+
 function applyPendingSoftDeletes(cache, outbox) {
-  return (outbox ?? []).filter(isSoftDeleteMutation).reduce(
+  return (outbox ?? []).filter((mutation) => isReplayableMutation(mutation) && isSoftDeleteMutation(mutation)).reduce(
     (nextCache, mutation) => applyCloudSoftDelete(
       nextCache,
       mutation.entity,
@@ -151,11 +159,32 @@ function responseRowsForMutation(mutation, response) {
   ]))
 }
 
-function mergeMutationResponse(cache, mutation, response) {
+function responseWithParentContext(cache, rows, fallbackCache = cache) {
+  if (rows.games?.length || (!rows.rounds?.length && !rows.gamePlayers?.length)) return rows
+  const gameIds = new Set([
+    ...(rows.rounds ?? []).map((round) => round?.game_id ?? round?.gameId),
+    ...(rows.gamePlayers ?? []).map((player) => player?.game_id ?? player?.gameId),
+  ].filter(Boolean))
+  if (!gameIds.size) return rows
+
+  const currentGames = new Map((cache?.games ?? []).map((game) => [game.id, game]))
+  const fallbackGames = new Map((fallbackCache?.games ?? []).map((game) => [game.id, game]))
+  const parentGames = [...gameIds]
+    .map((gameId) => currentGames.get(gameId) ?? fallbackGames.get(gameId))
+    .filter(Boolean)
+  if (!parentGames.length) return rows
+
+  return {
+    ...rows,
+    games: toRemoteRows({ ...(fallbackCache ?? cache), games: parentGames, roster: [] }).games,
+  }
+}
+
+function mergeMutationResponse(cache, mutation, response, fallbackCache = cache) {
   const rows = responseRowsForMutation(mutation, response)
   if (!rows) return cache
   const activeGameId = cache?.activeGameId ?? null
-  const remoteState = fromRemoteRows(rows, activeGameId)
+  const remoteState = fromRemoteRows(responseWithParentContext(cache, rows, fallbackCache), activeGameId)
   const merged = mergeRemoteState(cache, remoteState)
   return copyCloudMetadata({ ...merged, activeGameId }, merged)
 }
@@ -193,7 +222,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
 
   const publishStore = useCallback((store) => {
     storeRef.current = store
-    setPendingCount(store.outbox.length)
+    setPendingCount(store.outbox.filter(isReplayableMutation).length)
   }, [])
 
   const commitStore = useCallback((nextStore, removedMutationIds = []) => {
@@ -252,13 +281,14 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       stateRef.current,
     ), store.outbox)
     store = commitStore({ ...store, cache: baseCache })
-    if (store.outbox.some(isSoftDeleteMutation)) {
+    let conflictDetected = store.outbox.some(isConflictMutation) || store.lastError === CONFLICT_MESSAGE
+    if (store.outbox.some((mutation) => isReplayableMutation(mutation) && isSoftDeleteMutation(mutation))) {
       stateRef.current = baseCache
       if (mountedRef.current) setState(baseCache)
     }
     if (mountedRef.current) {
       setStatus('syncing')
-      setError(null)
+      setError(conflictDetected ? CONFLICT_MESSAGE : null)
     }
 
     try {
@@ -293,7 +323,8 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
 
       let replayedSoftDelete = false
       for (const mutation of [...store.outbox]) {
-        if (!(storeRef.current?.outbox ?? store.outbox).some((queued) => queued.id === mutation.id)) continue
+        const queuedMutation = (storeRef.current?.outbox ?? store.outbox).find((queued) => queued.id === mutation.id)
+        if (!queuedMutation || isConflictMutation(queuedMutation)) continue
         let response
         try {
           response = await replayMutation(mutation)
@@ -309,12 +340,22 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
             ...mergeRemoteState(localWithoutConflict, remoteState, previousSyncAt),
             activeGameId: latestActiveGameId,
           }, remoteState)
+          const conflictedMutation = {
+            ...mutation,
+            status: 'conflict',
+            error: CONFLICT_MESSAGE,
+            conflictedAt: new Date().toISOString(),
+          }
           store = commitStore({
             ...latestStoreAfterConflict,
+            outbox: latestStoreAfterConflict.outbox.map((queued) => (
+              queued.id === mutation.id ? conflictedMutation : queued
+            )),
             cache: refreshedCache,
             reconciledCache: copyCloudMetadata({ ...remoteState, activeGameId: latestActiveGameId }, remoteState),
             lastError: CONFLICT_MESSAGE,
           })
+          conflictDetected = true
           stateRef.current = refreshedCache
           if (mountedRef.current) {
             setState(refreshedCache)
@@ -322,7 +363,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
             setStatus('error')
           }
           clearRetry()
-          return
+          continue
         }
         replayedSoftDelete ||= isSoftDeleteMutation(mutation)
         const latestStoreAfterReplay = storeRef.current ?? store
@@ -336,7 +377,12 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           activeGameId: latestActiveGameId,
         }, latestStoreAfterReplay.reconciledCache)
         const responseCache = mergeMutationResponse(latestCacheForReplay, mutation, response)
-        const responseReconciledCache = mergeMutationResponse(latestReconciledCache, mutation, response)
+        const responseReconciledCache = mergeMutationResponse(
+          latestReconciledCache,
+          mutation,
+          response,
+          latestCacheForReplay,
+        )
         store = commitStore({
           ...removeMutation(latestStoreAfterReplay, mutation.id),
           cache: responseCache,
@@ -346,7 +392,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         if (mountedRef.current && response) setState(responseCache)
       }
 
-      store = commitStore({ ...store, lastError: null })
+      store = commitStore({ ...store, lastError: conflictDetected ? CONFLICT_MESSAGE : null })
       const pendingDeleteCache = applyPendingSoftDeletes(store.cache, store.outbox)
       const pendingDeleteChanged = pendingDeleteCache !== store.cache
       if (pendingDeleteChanged) store = commitStore({ ...store, cache: pendingDeleteCache })
@@ -354,12 +400,15 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         stateRef.current = store.cache
         if (mountedRef.current) setState(store.cache)
       }
-      const pendingAfterReplay = store.outbox.length > 0
+      const pendingAfterReplay = store.outbox.some(isReplayableMutation)
       clearRetry()
-      if (mountedRef.current) setStatus(pendingAfterReplay ? 'pending' : 'synced')
+      if (mountedRef.current) {
+        setError(conflictDetected ? CONFLICT_MESSAGE : null)
+        setStatus(conflictDetected ? 'error' : pendingAfterReplay ? 'pending' : 'synced')
+      }
       if (pendingAfterReplay) {
         setTimeout(() => {
-          if (mountedRef.current && storeRef.current?.outbox.length) void syncNow()
+          if (mountedRef.current && storeRef.current?.outbox.some(isReplayableMutation)) void syncNow()
         }, 0)
       }
     } catch (syncError) {

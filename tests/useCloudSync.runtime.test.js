@@ -250,7 +250,7 @@ test('keeps a soft-delete mutation pending when the API rejects a zero-row updat
   }
 })
 
-test('refreshes the shared row and preserves a pending CAS conflict error', async () => {
+test('refreshes the shared row and records a CAS conflict without keeping it pending', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
   const serverUpdatedAt = '2026-01-04T00:00:00.000Z'
@@ -313,9 +313,68 @@ test('refreshes the shared row and preserves a pending CAS conflict error', asyn
 
     assert.ok(snapshotCalls >= 2)
     assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
-    assert.equal(observed.hook.pendingCount, 1)
+    assert.equal(observed.hook.pendingCount, 0)
     assert.equal(observed.updates.at(-1).games[0].updatedAt, Date.parse(serverUpdatedAt))
-    assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1')).outbox.map((mutation) => mutation.id), ['m_conflict'])
+    const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
+    assert.equal(stored.outbox.length, 1)
+    assert.equal(stored.outbox[0].id, 'm_conflict')
+    assert.equal(stored.outbox[0].status, 'conflict')
+    assert.equal(stored.outbox[0].error, 'This was changed on another device. The shared version is now shown.')
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('continues replay after a CAS conflict while retaining the conflict error state', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const upsertPayloads = []
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async (rows) => {
+      upsertPayloads.push(rows)
+      if (upsertPayloads.length === 1) throw new Error('Supabase games: stale mutation; newer remote row exists')
+      return rows
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ activeGameId: null, games: [], roster: [] }, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_conflict_first',
+        entity: 'scorebook',
+        operation: 'upsert',
+        payload: { rows: { people: [], games: [{ id: 'g_first', game_id: 'farkle', updated_at: '2026-01-03T00:00:00.000Z', settings: {} }], gamePlayers: [], rounds: [] } },
+      })
+      observed.hook.enqueueStateMutation({
+        id: 'm_success_after_conflict',
+        entity: 'scorebook',
+        operation: 'upsert',
+        payload: { rows: { people: [{ id: 'p_after', name: 'After', updated_at: '2026-01-04T00:00:00.000Z' }], games: [], gamePlayers: [], rounds: [] } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(upsertPayloads.length, 2)
+    assert.equal(upsertPayloads[1].people[0].id, 'p_after')
+    assert.equal(observed.hook.error, 'This was changed on another device. The shared version is now shown.')
+    assert.equal(observed.hook.pendingCount, 0)
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(stored.outbox.length, 1)
+    assert.equal(stored.outbox[0].id, 'm_conflict_first')
+    assert.equal(stored.outbox[0].status, 'conflict')
+    assert.equal(stored.lastError, 'This was changed on another device. The shared version is now shown.')
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
@@ -411,6 +470,9 @@ test('merges concurrent edits to different rounds without a stale CAS write', as
       ['r_b', remoteGame.rounds[1].entries],
     ])
     assert.equal(merged.finishedAt, 1500)
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.deepEqual(stored.reconciledCache.games[0].rounds.find((round) => round.id === 'r_a').entries, localGame.rounds[0].entries)
+    assert.deepEqual(toRemoteRows(stored.reconciledCache).rounds.find((round) => round.id === 'r_a').entries, localGame.rounds[0].entries)
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
@@ -522,6 +584,73 @@ test('applies canonical upsert response metadata to local state immediately', as
     assert.equal(updates.at(-1).activeGameId, 'g_active')
     assert.equal(updates.at(-1).roster[0].updatedAt, Date.parse(serverUpdatedAt))
     assert.equal(JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1')).outbox.length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('merges a canonical round-only response into the reconciled parent game', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const serverUpdatedAt = '2026-01-04T00:00:00.000Z'
+  const localState = {
+    activeGameId: 'g_round_response',
+    roster: [],
+    games: [{
+      id: 'g_round_response',
+      gameId: 'farkle',
+      createdAt: 1,
+      updatedAt: 100,
+      players: [],
+      settings: {},
+      rounds: [{ id: 'r_response', updatedAt: 200, entries: { p_one: { score: 10 } } }],
+      finishedAt: null,
+    }],
+  }
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => ({
+      people: [],
+      games: [],
+      gamePlayers: [],
+      rounds: [{
+        id: 'r_response',
+        game_id: 'g_round_response',
+        round_index: 0,
+        entries: { p_one: { score: 42 } },
+        updated_at: serverUpdatedAt,
+        deleted_at: null,
+      }],
+    }),
+    softDelete: async () => {},
+  }
+  const observed = { hook: null, updates: [] }
+  function Harness() {
+    observed.hook = useCloudSync(localState, (nextState) => observed.updates.push(nextState), { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_round_response',
+        entity: 'scorebook',
+        operation: 'upsert',
+        state: localState,
+        payload: { rows: { people: [], games: [], gamePlayers: [], rounds: [] } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(observed.updates.at(-1).games[0].rounds[0].entries.p_one.score, 42)
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(stored.reconciledCache.games[0].id, 'g_round_response')
+    assert.equal(stored.reconciledCache.games[0].rounds[0].entries.p_one.score, 42)
+    assert.equal(toRemoteRows(stored.reconciledCache).rounds[0].entries.p_one.score, 42)
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
