@@ -1,10 +1,26 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
+import { copyFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 
 // GitHub Pages serves this from /<repo>/, so the deploy workflow sets
 // BUILD_BASE. Locally everything runs from the root.
 const base = process.env.BUILD_BASE || '/'
+
+function spaFallbackPlugin() {
+  let outputDirectory
+  return {
+    name: 'scorebook-spa-fallback',
+    configResolved(config) {
+      outputDirectory = resolve(config.root, config.build.outDir)
+    },
+    async writeBundle() {
+      if (!outputDirectory) throw new Error('Could not generate SPA fallback: output directory is unknown')
+      await copyFile(resolve(outputDirectory, 'index.html'), resolve(outputDirectory, '404.html'))
+    },
+  }
+}
 
 export default defineConfig({
   base,
@@ -39,5 +55,6 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
       },
     }),
+    spaFallbackPlugin(),
   ],
 })
