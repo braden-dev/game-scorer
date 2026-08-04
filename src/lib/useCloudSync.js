@@ -5,6 +5,7 @@ import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, hasCloudMetada
 import {
   conservativeSyncCursor,
   activeGameIdForSync,
+  clone,
   createInFlightSync,
   enqueueMutation,
   loadSyncStore,
@@ -21,6 +22,7 @@ const RETRY_BASE_DELAY_MS = 50
 const RETRY_MAX_DELAY_MS = 1000
 const MAX_AUTOMATIC_RETRIES = 5
 export const CONFLICT_MESSAGE = 'Sync conflict; local changes kept. Retry when ready.'
+const TERMINAL_CONFLICT_MESSAGE = 'Sync conflict; local changes kept. Please review the shared result.'
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
 
 function online() {
@@ -50,11 +52,20 @@ function remoteKey(entity) {
   return null
 }
 
+function isLocalStatePayload(payload) {
+  return Array.isArray(payload?.roster)
+    || (Array.isArray(payload?.games) && payload.games.some((game) => (
+      game?.gameId !== undefined
+      || Array.isArray(game?.players)
+      || Array.isArray(game?.rounds)
+    )))
+}
+
 function rowsForMutation(mutation) {
   const payload = mutation?.payload
   if (payload?.rows && typeof payload.rows === 'object') return payload.rows
+  if (isLocalStatePayload(payload)) return toRemoteRows(payload)
   if (payload && REMOTE_KEYS.some((key) => Array.isArray(payload[key]))) return payload
-  if (payload?.games || payload?.roster) return toRemoteRows(payload)
 
   const key = remoteKey(mutation?.entity)
   if (!key) return null
@@ -67,6 +78,77 @@ function rowsForMutation(mutation) {
 function isCasConflict(error) {
   const message = messageFor(error)
   return /stale mutation|conflicting equal-version row/i.test(message)
+}
+
+function rebaseRemoteRow(row) {
+  const version = new Date().toISOString()
+  const rebased = { ...row, updated_at: version }
+  if (row?.deleted_at != null) rebased.deleted_at = version
+  return rebased
+}
+
+function rebaseLocalRow(row) {
+  const version = new Date().toISOString()
+  const rebased = { ...row, updatedAt: version }
+  if (Object.prototype.hasOwnProperty.call(row ?? {}, 'updated_at')) rebased.updated_at = version
+  if (row?.deletedAt != null || row?.deleted_at != null) {
+    rebased.deletedAt = version
+    if (Object.prototype.hasOwnProperty.call(row ?? {}, 'deleted_at')) rebased.deleted_at = version
+  }
+  return rebased
+}
+
+function rebaseLocalState(payload) {
+  const nextPayload = { ...payload }
+  if (Array.isArray(nextPayload.roster)) nextPayload.roster = nextPayload.roster.map(rebaseLocalRow)
+  if (Array.isArray(nextPayload.games)) {
+    nextPayload.games = nextPayload.games.map((game) => ({
+      ...rebaseLocalRow(game),
+      players: Array.isArray(game?.players) ? game.players.map(rebaseLocalRow) : game?.players,
+      rounds: Array.isArray(game?.rounds) ? game.rounds.map(rebaseLocalRow) : game?.rounds,
+    }))
+  }
+  return nextPayload
+}
+
+function rebaseRemoteRows(rows) {
+  for (const key of REMOTE_KEYS) {
+    if (Array.isArray(rows[key])) rows[key] = rows[key].map(rebaseRemoteRow)
+  }
+  return rows
+}
+
+function rebasePayload(payload, entity) {
+  const nextPayload = clone(payload ?? {})
+  if (!nextPayload || typeof nextPayload !== 'object' || Array.isArray(nextPayload)) return nextPayload
+  if (nextPayload.rows && typeof nextPayload.rows === 'object' && !Array.isArray(nextPayload.rows)) {
+    nextPayload.rows = rebaseRemoteRows(nextPayload.rows)
+    return nextPayload
+  }
+  if (isLocalStatePayload(nextPayload)) return rebaseLocalState(nextPayload)
+  if (REMOTE_KEYS.some((key) => Array.isArray(nextPayload[key]))) return rebaseRemoteRows(nextPayload)
+  if (nextPayload.row && typeof nextPayload.row === 'object' && !Array.isArray(nextPayload.row)) {
+    nextPayload.row = rebaseRemoteRow(nextPayload.row)
+    return nextPayload
+  }
+  if (remoteKey(entity)) return rebaseRemoteRow(nextPayload)
+  return nextPayload
+}
+
+function rebaseMutation(mutation) {
+  const rebased = {
+    ...mutation,
+    payload: rebasePayload(mutation.payload, mutation.entity),
+    conflictAttempts: Number(mutation.conflictAttempts ?? 0) + 1,
+  }
+  delete rebased.status
+  delete rebased.error
+  delete rebased.conflictedAt
+  return rebased
+}
+
+function canRebaseMutation(mutation) {
+  return mutation?.operation === 'upsert' && Number(mutation.conflictAttempts ?? 0) < 1
 }
 
 function mutationUpdatedAt(mutation) {
@@ -248,7 +330,14 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       stateRef.current,
     ), store.outbox)
     store = commitStore({ ...store, cache: baseCache })
-    let conflictDetected = store.outbox.some(isConflictMutation) || store.lastError === CONFLICT_MESSAGE
+    const existingConflict = store.outbox.find(isConflictMutation)
+    let conflictMessage = existingConflict
+      ? existingConflict.error ?? TERMINAL_CONFLICT_MESSAGE
+      : (store.lastError === TERMINAL_CONFLICT_MESSAGE ? TERMINAL_CONFLICT_MESSAGE : CONFLICT_MESSAGE)
+    const conflictDetected = Boolean(existingConflict)
+      || store.outbox.some((mutation) => Number(mutation.conflictAttempts ?? 0) > 0)
+      || store.lastError === CONFLICT_MESSAGE
+      || store.lastError === TERMINAL_CONFLICT_MESSAGE
     if (store.outbox.some((mutation) => isReplayableMutation(mutation) && isSoftDeleteMutation(mutation))) {
       stateRef.current = baseCache
       if (mountedRef.current) setState(baseCache)
@@ -314,12 +403,15 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
             ...mergedConflictState,
             activeGameId: latestActiveGameId,
           }, mergedConflictState)
-          const conflictedMutation = {
-            ...mutation,
-            status: 'conflict',
-            error: CONFLICT_MESSAGE,
-            conflictedAt: new Date().toISOString(),
-          }
+          const conflictedMutation = canRebaseMutation(mutation)
+            ? rebaseMutation(mutation)
+            : {
+              ...mutation,
+              status: 'conflict',
+              error: TERMINAL_CONFLICT_MESSAGE,
+              conflictedAt: new Date().toISOString(),
+            }
+          conflictMessage = canRebaseMutation(mutation) ? CONFLICT_MESSAGE : TERMINAL_CONFLICT_MESSAGE
           store = commitStore({
             ...latestStoreAfterConflict,
             outbox: latestStoreAfterConflict.outbox.map((queued) => (
@@ -329,12 +421,11 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
             reconciledCache: copyCloudMetadata({ ...remoteState, activeGameId: latestActiveGameId }, remoteState),
             lastError: CONFLICT_MESSAGE,
           })
-          conflictDetected = true
           stateRef.current = refreshedCache
           if (mountedRef.current) {
             setState(refreshedCache)
-            setError(CONFLICT_MESSAGE)
-            setStatus('error')
+            setError(conflictMessage)
+            setStatus(canRebaseMutation(mutation) ? 'error' : 'conflict')
           }
           clearRetry()
           continue
@@ -366,7 +457,14 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         if (mountedRef.current && response) setState(responseCache)
       }
 
-      store = commitStore({ ...store, lastError: conflictDetected ? CONFLICT_MESSAGE : null })
+      const terminalConflict = store.outbox.find(isConflictMutation)
+      const rebasedMutationPending = store.outbox.some((mutation) => (
+        isReplayableMutation(mutation) && Number(mutation.conflictAttempts ?? 0) > 0
+      ))
+      const finalConflictMessage = terminalConflict
+        ? terminalConflict.error ?? TERMINAL_CONFLICT_MESSAGE
+        : rebasedMutationPending ? CONFLICT_MESSAGE : null
+      store = commitStore({ ...store, lastError: finalConflictMessage })
       const pendingDeleteCache = applyPendingSoftDeletes(store.cache, store.outbox)
       const pendingDeleteChanged = pendingDeleteCache !== store.cache
       if (pendingDeleteChanged) store = commitStore({ ...store, cache: pendingDeleteCache })
@@ -377,8 +475,10 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       const pendingAfterReplay = store.outbox.some(isReplayableMutation)
       clearRetry()
       if (mountedRef.current) {
-        setError(conflictDetected ? CONFLICT_MESSAGE : null)
-        setStatus(conflictDetected ? 'error' : pendingAfterReplay ? 'pending' : 'synced')
+        setError(finalConflictMessage)
+        setStatus(terminalConflict
+          ? 'conflict'
+          : finalConflictMessage ? 'error' : pendingAfterReplay ? 'pending' : 'synced')
       }
       if (pendingAfterReplay) {
         setTimeout(() => {

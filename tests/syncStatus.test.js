@@ -24,3 +24,16 @@ test('renders retry behavior for a sync error and nothing for clean synced state
   errorElement.props.children[1].props.onClick()
   assert.equal(retries, 1)
 })
+
+test('renders terminal conflicts without an action button', () => {
+  const conflictElement = createSyncStatusElement({
+    status: 'conflict',
+    pendingCount: 0,
+    syncNow: () => { throw new Error('terminal conflicts are not retryable') },
+  })
+
+  const conflictMarkup = renderToStaticMarkup(conflictElement)
+  assert.match(conflictMarkup, /Sync conflict/)
+  assert.doesNotMatch(conflictMarkup, /Retry/)
+  assert.doesNotMatch(conflictMarkup, /<button/)
+})

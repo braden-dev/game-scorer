@@ -4,6 +4,7 @@ export function createSyncStatusElement({ status, pendingCount = 0, syncNow }) {
   if (status === 'local' || (status === 'synced' && pendingCount === 0)) return null
 
   const props = { role: 'status', 'aria-live': 'polite' }
+  if (status === 'conflict') return React.createElement('div', props, 'Sync conflict · review shared result')
   if (status === 'error') {
     return React.createElement(
       'div',

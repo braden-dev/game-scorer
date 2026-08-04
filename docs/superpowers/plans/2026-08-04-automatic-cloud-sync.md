@@ -71,7 +71,8 @@ git commit -m "fix: compare cloud timestamps semantically"
 
 **Files:**
 - Modify: `src/lib/useCloudSync.js:67-116, 287-424`
-- Test: `tests/useCloudSync.runtime.test.js`
+- Modify: `src/components/SyncStatusView.js`
+- Test: `tests/useCloudSync.runtime.test.js`, `tests/syncStatus.test.js`
 
 - [ ] **Step 1: Add a failing regression assertion for conflict cache preservation**
 
@@ -93,16 +94,16 @@ Run `node --test tests/useCloudSync.runtime.test.js`. Confirm the conflict test 
 
 In the CAS conflict branch, fetch the remote snapshot and merge it with `latestStoreAfterConflict.cache` directly. Remove the call to `removeConflictRows()` from that path. Keep the conflicted outbox entry recorded for diagnostics, but preserve the optimistic local cache and its cloud metadata so a failed write cannot erase a just-created game.
 
-Update the conflict status text to a compact retry-oriented message rather than claiming that the shared version is now shown when local optimistic state remains visible.
+Update the conflict status text to be compact and accurate. A first automatic rebase may be retryable; a terminal conflict must use a distinct non-actionable status without a Retry button rather than claiming that the shared version is now shown.
 
 - [ ] **Step 4: Run all sync runtime tests**
 
-Run `node --test tests/useCloudSync.runtime.test.js tests/useCloudSync.test.js`. Update only assertions that describe the intentionally changed conflict behavior; retain tests proving genuine remote conflict entries are recorded and ordinary network failures remain queued.
+Run `node --test tests/useCloudSync.runtime.test.js tests/useCloudSync.test.js tests/syncStatus.test.js`. Update only assertions that describe the intentionally changed conflict behavior; retain tests proving genuine remote conflict entries are recorded and ordinary network failures remain queued.
 
 - [ ] **Step 5: Commit the cache-safety fix**
 
 ```bash
-git add src/lib/useCloudSync.js tests/useCloudSync.runtime.test.js
+git add src/lib/useCloudSync.js src/components/SyncStatusView.js tests/useCloudSync.runtime.test.js tests/syncStatus.test.js
 git commit -m "fix: preserve local state after sync conflicts"
 ```
 
