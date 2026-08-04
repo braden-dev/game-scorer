@@ -1,14 +1,8 @@
 import { useMemo, useState } from 'react'
 import { GAMES, evaluate, getGameDef } from '../games/index.js'
 import { navigate } from '../lib/router.js'
+import { compareUpdatedAt } from '../lib/time.js'
 import { GameCard } from './Home.jsx'
-
-function timestamp(value) {
-  const numeric = Number(value)
-  if (Number.isFinite(numeric)) return numeric
-  const parsed = Date.parse(String(value || ''))
-  return Number.isFinite(parsed) ? parsed : 0
-}
 
 function isFinished(game) {
   return Boolean(game.finishedAt) || evaluate(game).status.finished
@@ -19,7 +13,7 @@ export function filterGames(games = [], status = 'all', gameType = 'all') {
     .filter((game) => game && !game.deletedAt && !game.deleted_at && getGameDef(game.gameId))
     .filter((game) => gameType === 'all' || game.gameId === gameType)
     .filter((game) => status === 'all' || (status === 'finished' ? isFinished(game) : !isFinished(game)))
-    .sort((first, second) => timestamp(second.updatedAt) - timestamp(first.updatedAt))
+    .sort(compareUpdatedAt)
 }
 
 export default function Games({ games = [], onNavigate = navigate }) {

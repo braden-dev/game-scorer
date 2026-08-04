@@ -261,7 +261,8 @@ export default function App() {
     initialMigrationCompleted,
   })
 
-  const currentNewGameId = route.type === 'new-game' ? route.gameId : newGameId
+  const requestedNewGameId = route.type === 'new-game' ? route.gameId : newGameId
+  const currentNewGameId = getGameDef(requestedNewGameId) ? requestedNewGameId : null
 
   if (currentNewGameId) {
     return (

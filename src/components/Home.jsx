@@ -1,4 +1,5 @@
 import { GAMES, evaluate } from '../games/index.js'
+import { compareUpdatedAt } from '../lib/time.js'
 import { relativeDate } from '../lib/util.js'
 import { navigate } from '../lib/router.js'
 import PlayerChip from './PlayerChip.jsx'
@@ -38,7 +39,7 @@ export function GameCard({ game, onOpen, onDelete }) {
 }
 
 export default function Home({ games, onNew, onOpen, onDelete, onOpenData, installBanner, onNavigate = navigate }) {
-  const sorted = [...games].sort((a, b) => b.updatedAt - a.updatedAt)
+  const sorted = [...games].sort(compareUpdatedAt)
   const active = sorted.filter((g) => !g.finishedAt)
   const done = sorted.filter((g) => g.finishedAt)
 

@@ -1,3 +1,5 @@
+import { parseTimestamp } from './time.js'
+
 export function uid(prefix = 'id') {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}${Date.now().toString(36).slice(-4)}`
 }
@@ -18,7 +20,9 @@ export function formatSigned(n) {
 }
 
 export function relativeDate(ts) {
-  const diff = Date.now() - ts
+  const timestamp = parseTimestamp(ts)
+  if (timestamp === null) return 'unknown time'
+  const diff = Date.now() - timestamp
   const mins = Math.round(diff / 60000)
   if (mins < 1) return 'just now'
   if (mins < 60) return `${mins}m ago`
@@ -26,7 +30,7 @@ export function relativeDate(ts) {
   if (hours < 24) return `${hours}h ago`
   const days = Math.round(hours / 24)
   if (days < 30) return `${days}d ago`
-  return new Date(ts).toLocaleDateString()
+  return new Date(timestamp).toLocaleDateString()
 }
 
 /** Deterministic color for a player chip, derived from their id. */

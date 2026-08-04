@@ -1,5 +1,6 @@
 import { buildGameBreakdown, buildPersonStats } from '../lib/stats.js'
 import { navigate } from '../lib/router.js'
+import { compareUpdatedAt } from '../lib/time.js'
 import { getGameDef } from '../games/index.js'
 import { GameCard } from './Home.jsx'
 
@@ -35,11 +36,7 @@ export default function PersonPage({ personId, roster = [], games = [], onNaviga
   const breakdown = buildGameBreakdown(person.id, liveGames)
   const recentGames = liveGames
     .filter((game) => game.players?.some((player) => player.id === person.id) && getGameDef(game.gameId))
-    .sort((first, second) => {
-      const firstTime = Number.isFinite(Number(first.updatedAt)) ? Number(first.updatedAt) : Date.parse(String(first.updatedAt || '')) || 0
-      const secondTime = Number.isFinite(Number(second.updatedAt)) ? Number(second.updatedAt) : Date.parse(String(second.updatedAt || '')) || 0
-      return secondTime - firstTime
-    })
+    .sort(compareUpdatedAt)
   const favorite = stats.favoriteGame ? getGameDef(stats.favoriteGame)?.name ?? stats.favoriteGame : '—'
 
   return (

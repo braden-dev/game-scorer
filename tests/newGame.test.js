@@ -74,11 +74,12 @@ function textOf(element) {
 test('NewGame makes exact-name reuse and duplicate creation explicit', async () => {
   const NewGame = await loadNewGame()
   const added = []
+  let startedPlayers = null
   const props = {
     gameId: 'farkle',
-    roster: [{ id: 'p_john', name: 'John' }],
+    roster: [{ id: 'p_john', name: 'John' }, { id: 'p_mary', name: 'Mary' }],
     onCancel() {},
-    onStart() {},
+    onStart(players) { startedPlayers = players },
     onAddToRoster(name) { added.push(name); return { id: 'p_new', name } },
     onRemoveFromRoster() {},
   }
@@ -98,4 +99,17 @@ test('NewGame makes exact-name reuse and duplicate creation explicit', async () 
   const useExisting = findElement(results, (element) => element.props?.className === 'person-search-result' && !element.props.className.includes('create'))
   useExisting.props.onClick()
   assert.deepEqual(added, [])
+
+  globalThis.__newGameReactState.cursor = 0
+  const selectedTree = NewGame(props)
+  const addMary = findElement(selectedTree, (element) => element.type === 'button' && textOf(element).trim() === 'Mary')
+  assert.ok(addMary)
+  addMary.props.onClick()
+
+  globalThis.__newGameReactState.cursor = 0
+  const readyTree = NewGame(props)
+  const startButton = findElement(readyTree, (element) => element.type === 'button' && element.props?.className === 'btn primary big')
+  assert.ok(startButton)
+  startButton.props.onClick()
+  assert.deepEqual(startedPlayers.map((player) => player.id), ['p_john', 'p_mary'])
 })

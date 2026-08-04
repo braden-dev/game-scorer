@@ -241,3 +241,46 @@ test('GameView player removal reaches App and queues a join-row tombstone', asyn
     deleted_at: new Date(mutations[1].updatedAt).toISOString(),
   })
 })
+
+test('invalid new-game routes render Home instead of dereferencing an unknown game', async () => {
+  const App = await loadComponent('src/App.jsx')
+  prepareStorage({ games: [], roster: [], activeGameId: null })
+  globalThis.window.location = { pathname: '/new-game/not-a-real-game' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+
+  assert.ok(findElement(appTree, (element) => element.type?.name === 'Home'))
+})
+
+test('App follows direct game/home history destinations and excludes deleted games', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const gameRoute = App()
+  assert.equal(gameRoute.type.name, 'GameView')
+
+  globalThis.window.location.pathname = '/'
+  globalThis.__scorebookTestReact.reset()
+  globalThis.__scorebookTestReact.begin()
+  const homeRoute = App()
+  assert.ok(findElement(homeRoute, (element) => element.type?.name === 'Home'))
+
+  const deletedState = {
+    ...state,
+    activeGameId: null,
+    games: [{ ...state.games[0], deletedAt: 123 }],
+  }
+  prepareStorage(deletedState)
+  globalThis.window.location = { pathname: '/games' }
+  globalThis.__scorebookTestReact.reset()
+  globalThis.__scorebookTestReact.begin()
+  const gamesRoute = App()
+  assert.equal(gamesRoute.type.name, 'Games')
+  assert.deepEqual(gamesRoute.props.games, [])
+})
