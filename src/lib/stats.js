@@ -27,6 +27,56 @@ function finalTotalMetrics(totals, betterIs) {
   }
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function assertKnownGameShape(game) {
+  if (!isRecord(game) || typeof game.gameId !== 'string') {
+    throw new TypeError('Malformed known game: expected a game object with a gameId')
+  }
+  if (!Array.isArray(game.players) || game.players.some((player) => !isRecord(player) || typeof player.id !== 'string')) {
+    throw new TypeError(`Malformed known game ${game.gameId}: expected players with string IDs`)
+  }
+  if (!isRecord(game.settings) || !Array.isArray(game.rounds)) {
+    throw new TypeError(`Malformed known game ${game.gameId}: expected settings and rounds`)
+  }
+  if (game.rounds.some((round) => !isRecord(round) || !isRecord(round.entries))) {
+    throw new TypeError(`Malformed known game ${game.gameId}: expected round entries`)
+  }
+}
+
+function timestamp(value) {
+  if (value === null || value === undefined || value === '') return null
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return numeric
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function compareIds(firstId, secondId) {
+  return firstId === secondId ? 0 : firstId < secondId ? -1 : 1
+}
+
+function compareFinishedGames(first, second) {
+  const firstFinished = timestamp(first.game.finishedAt)
+  const secondFinished = timestamp(second.game.finishedAt)
+  const firstCreated = timestamp(first.game.createdAt)
+  const secondCreated = timestamp(second.game.createdAt)
+  const firstTime = firstFinished ?? firstCreated
+  const secondTime = secondFinished ?? secondCreated
+
+  if (firstTime !== null && secondTime !== null && firstTime !== secondTime) return firstTime - secondTime
+  if (firstTime === null && secondTime !== null) return 1
+  if (firstTime !== null && secondTime === null) return -1
+  if (firstCreated !== null && secondCreated !== null && firstCreated !== secondCreated) {
+    return firstCreated - secondCreated
+  }
+  if (firstCreated === null && secondCreated !== null) return 1
+  if (firstCreated !== null && secondCreated === null) return -1
+  return first.originalIndex - second.originalIndex || compareIds(first.game.id || '', second.game.id || '')
+}
+
 function normalizeStandings(evaluated) {
   const standings = Array.isArray(evaluated?.standings) ? evaluated.standings : []
   return standings
@@ -40,24 +90,24 @@ function normalizeStandings(evaluated) {
     .filter(Boolean)
 }
 
+/**
+ * Unknown game IDs are ignored. Null or empty inputs produce empty stats.
+ * Known games must have the expected players, settings, rounds, and entries
+ * shape; malformed known records throw TypeError, and evaluator errors are
+ * intentionally allowed to surface rather than becoming zero-valued stats.
+ */
 function evaluatedGames(games) {
   if (!Array.isArray(games)) return []
 
-  return games.flatMap((game) => {
-    if (!game || !getGameDef(game.gameId)) return []
-
-    let evaluated
-    try {
-      evaluated = evaluate(game)
-    } catch {
-      return []
-    }
-
+  return games.flatMap((game, originalIndex) => {
+    if (!isRecord(game) || !getGameDef(game.gameId)) return []
+    assertKnownGameShape(game)
+    const evaluated = evaluate(game)
     if (evaluated?.status?.finished !== true) return []
     const standings = normalizeStandings(evaluated)
     if (!standings.length) return []
-    return [{ game, evaluated, standings }]
-  })
+    return [{ game, evaluated, standings, originalIndex }]
+  }).sort(compareFinishedGames)
 }
 
 function playerRow(record, personId) {
@@ -145,7 +195,9 @@ export function buildGameBreakdown(personId, games) {
     grouped.set(gameId, records)
   }
 
-  return [...grouped.entries()].map(([gameId, records]) => {
+  return [...grouped.entries()]
+    .sort(([firstId], [secondId]) => compareIds(firstId, secondId))
+    .map(([gameId, records]) => {
     const summary = buildSummary(personId, records)
     return {
       gameId,
@@ -155,7 +207,7 @@ export function buildGameBreakdown(personId, games) {
       averageFinish: summary.averageFinish,
       gameSpecific: gameSpecific(personId, records),
     }
-  })
+    })
 }
 
 export function buildLeaderboard(games) {

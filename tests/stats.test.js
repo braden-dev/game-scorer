@@ -71,6 +71,10 @@ function threeThirteen(id, entries) {
   }
 }
 
+function dated(game, finishedAt, createdAt) {
+  return { ...game, finishedAt, createdAt }
+}
+
 test('excludes unfinished games and ignores unknown game definitions', () => {
   const unfinished = farkle('unfinished', { p1: 50, p2: 25 })
   const unknown = {
@@ -134,20 +138,20 @@ test('keeps each game breakdown and its totals isolated by game definition', () 
 
   assert.deepEqual(buildGameBreakdown('p1', games), [
     {
-      gameId: 'farkle',
-      games: 2,
-      wins: 2,
-      winRate: 1,
-      averageFinish: 1,
-      gameSpecific: { bestFinalTotal: 200, averageFinalTotal: 150 },
-    },
-    {
       gameId: 'dutch-blitz',
       games: 2,
       wins: 2,
       winRate: 1,
       averageFinish: 1,
       gameSpecific: { bestFinalTotal: 30, averageFinalTotal: 25, blitzWins: 1 },
+    },
+    {
+      gameId: 'farkle',
+      games: 2,
+      wins: 2,
+      winRate: 1,
+      averageFinish: 1,
+      gameSpecific: { bestFinalTotal: 200, averageFinalTotal: 150 },
     },
     {
       gameId: 'three-thirteen',
@@ -160,17 +164,54 @@ test('keeps each game breakdown and its totals isolated by game definition', () 
   ])
 })
 
+test('sorts breakdowns by game ID instead of input order', () => {
+  const games = [
+    threeThirteen('three-thirteen-first', {
+      p1: { points: 0, out: true, first: true },
+      p2: { points: 3, out: false, first: false },
+    }),
+    farkle('farkle-second', { p1: 100, p2: 50 }),
+    dutchBlitz('dutch-blitz-third', {
+      p1: { dutch: 20, blitz: 0, blitzed: false },
+      p2: { dutch: 0, blitz: 5, blitzed: false },
+    }),
+  ]
+
+  assert.deepEqual(buildGameBreakdown('p1', games).map(({ gameId }) => gameId), [
+    'dutch-blitz',
+    'farkle',
+    'three-thirteen',
+  ])
+})
+
 test('follows finished-game order for win streaks and counts shared teammates', () => {
   const games = [
-    farkle('win-one', { p1: 100, p2: 50, p3: 25 }),
-    farkle('loss', { p1: 50, p2: 100 }),
-    farkle('win-two', { p1: 100, p2: 50 }),
-    farkle('win-three', { p1: 100, p2: 50 }),
+    dated(farkle('win-three', { p1: 100, p2: 50 }), 400, 40),
+    dated(farkle('win-one', { p1: 100, p2: 50, p3: 25 }), 100, 10),
+    dated(farkle('win-two', { p1: 100, p2: 50 }), 300, 30),
+    dated(farkle('loss', { p1: 50, p2: 100 }), 200, 20),
   ]
 
   const stats = buildPersonStats('p1', games)
   assert.equal(stats.longestWinStreak, 2)
   assert.deepEqual(stats.mostPlayedTeammate, { id: 'p2', name: 'P2', games: 4 })
+})
+
+test('uses createdAt as the chronological fallback when finishedAt is missing', () => {
+  const games = [
+    dated(farkle('later', { p1: 100, p2: 50 }), null, 300),
+    dated(farkle('earliest', { p1: 50, p2: 100 }), null, 100),
+    dated(farkle('middle', { p1: 100, p2: 50 }), null, 200),
+  ]
+
+  assert.equal(buildPersonStats('p1', games).longestWinStreak, 2)
+})
+
+test('surfaces malformed known-game records instead of treating them as zero stats', () => {
+  assert.throws(
+    () => buildPersonStats('p1', [{ id: 'bad', gameId: 'farkle', players: [] }]),
+    { name: 'TypeError', message: /malformed/i },
+  )
 })
 
 test('chooses the lexicographically first game ID when favorite games are tied', () => {
@@ -196,4 +237,42 @@ test('builds a ranked leaderboard from people in finished known games', () => {
     { personId: 'p1', rank: 1, wins: 2 },
     { personId: 'p2', rank: 2, wins: 0 },
   ])
+})
+
+test('uses competition ranks for tied leaderboard entries', () => {
+  const games = [
+    farkle('leader-tie-one', { p1: 100, p2: 100, p3: 50 }),
+    farkle('leader-tie-two', { p1: 100, p2: 100, p3: 50 }),
+  ]
+
+  assert.deepEqual(buildLeaderboard(games).map(({ personId, rank }) => ({ personId, rank })), [
+    { personId: 'p1', rank: 1 },
+    { personId: 'p2', rank: 1 },
+    { personId: 'p3', rank: 3 },
+  ])
+})
+
+test('returns stable empty results for null and empty inputs', () => {
+  assert.deepEqual(buildPersonStats('p1', null), {
+    games: 0,
+    wins: 0,
+    winRate: 0,
+    averageFinish: null,
+    longestWinStreak: 0,
+    favoriteGame: null,
+    mostPlayedTeammate: null,
+  })
+  assert.deepEqual(buildPersonStats('p1', []), {
+    games: 0,
+    wins: 0,
+    winRate: 0,
+    averageFinish: null,
+    longestWinStreak: 0,
+    favoriteGame: null,
+    mostPlayedTeammate: null,
+  })
+  assert.deepEqual(buildGameBreakdown('p1', null), [])
+  assert.deepEqual(buildGameBreakdown('p1', []), [])
+  assert.deepEqual(buildLeaderboard(null), [])
+  assert.deepEqual(buildLeaderboard([]), [])
 })
