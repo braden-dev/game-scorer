@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import * as esbuild from 'esbuild'
 
 const fakeReact = `
@@ -83,4 +84,12 @@ test('People shows active roster stats and opens a person page', async () => {
   assert.ok(personButton)
   personButton.props.onClick()
   assert.deepEqual(globalThis.__peopleRoute, { type: 'person', id: 'p_john' })
+})
+
+test('global sync notice reserves normal flow space instead of overlaying controls', async () => {
+  const styles = await readFile(new URL('../src/styles.css', import.meta.url), 'utf8')
+  const notice = styles.match(/\.global-sync-notice\s*\{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(notice)
+  assert.doesNotMatch(notice, /position:\s*fixed/)
+  assert.match(notice, /margin:/)
 })

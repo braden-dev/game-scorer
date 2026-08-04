@@ -31,13 +31,11 @@ function revivedGame(game, deletedAt) {
   return {
     ...snapshot(game),
     updatedAt,
-    players: game.players.map((player) => ({ ...player, updatedAt })),
-    rounds: game.rounds.map((round) => ({ ...round, updatedAt })),
   }
 }
 
 export function AppShell({ content, undoToast, syncNotice }) {
-  return <>{content}{undoToast}{syncNotice}</>
+  return <>{syncNotice}{content}{undoToast}</>
 }
 
 export default function App() {
@@ -144,7 +142,14 @@ export default function App() {
         ...snapshot(action.round),
         updatedAt: Math.max(Date.now(), (Number(action.deletedAt) || 0) + 1),
       })
-      const updatedGame = revivedGame({ ...game, rounds }, action.deletedAt)
+      const restoredMetadata = action.gameSnapshot ? snapshot(action.gameSnapshot) : game
+      const updatedGame = revivedGame({
+        ...restoredMetadata,
+        // Keep the current child collections so unrelated edits are not
+        // replaced while the deleted round is being restored.
+        players: game.players,
+        rounds,
+      }, action.deletedAt)
       return { ...previous, games: previous.games.map((candidate) => candidate.id === game.id ? updatedGame : candidate) }
     }, stateChangeMutation)
   }, [applyMutation, expireUndo, stateChangeMutation, sync])
@@ -275,6 +280,7 @@ export default function App() {
       showUndo({
         kind: 'round',
         gameId: next.id,
+        gameSnapshot: snapshot(previousGame),
         round: snapshot(removedRound),
         roundIndex: removedRoundIndex,
         deletedAt: next.updatedAt,

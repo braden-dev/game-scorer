@@ -177,13 +177,9 @@ input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px c
 .data-status.bad { color: var(--bad); }
 .data-status.conflict { color: var(--text-dim); }
 .global-sync-notice {
-  position: fixed;
-  top: calc(12px + env(safe-area-inset-top));
-  left: 16px;
-  right: 16px;
-  z-index: 55;
+  width: 100%;
   max-width: 620px;
-  margin: 0 auto;
+  margin: 0 auto 16px;
   padding: 10px 14px;
   background: var(--bg-elev-2);
   border: 1px solid var(--line);

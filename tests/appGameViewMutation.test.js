@@ -324,6 +324,43 @@ test('game deletion can be undone before the ten-second window expires', async (
   ])
 })
 
+test('game Undo preserves untouched child timestamps in the full-game upsert', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.activeGameId = null
+  state.games[0] = {
+    ...state.games[0],
+    players: state.games[0].players.map((player, index) => ({ ...player, updatedAt: 100 + index })),
+    rounds: [
+      { id: 'r_old', updatedAt: 200, entries: { p_one: { score: 500 }, p_two: { score: 700 } } },
+      { id: 'r_unrelated', updatedAt: 900, entries: { p_one: { score: 300 }, p_two: { score: 100 } } },
+    ],
+  }
+  prepareStorage(state)
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  initial.props.content.props.children[0].props.onDelete('g_mutations')
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo').props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterUndo = App()
+  const restored = afterUndo.props.content.props.children[0].props.games[0]
+  assert.deepEqual(restored.players.map((player) => player.updatedAt), [100, 101])
+  assert.deepEqual(restored.rounds.map((round) => round.updatedAt), [200, 900])
+
+  const restoredRows = globalThis.__scorebookTestSync.mutations[0].payload.rows
+  assert.deepEqual(
+    restoredRows.rounds.map((round) => [round.id, round.updated_at]),
+    [['r_old', new Date(200).toISOString()], ['r_unrelated', new Date(900).toISOString()]],
+  )
+})
+
 test('expired game deletion cannot restore the snapshot', async () => {
   const App = await loadComponent('src/App.jsx')
   prepareStorage({ ...gameState(), activeGameId: null })
@@ -369,6 +406,37 @@ test('round deletion restores the complete round snapshot through Undo', async (
   globalThis.__scorebookTestReact.begin()
   const afterUndo = App()
   assert.deepEqual(afterUndo.props.content.props.game.rounds.map(({ id, entries }) => ({ id, entries })), gameState().games[0].rounds)
+})
+
+test('final-round Undo restores the finished game metadata', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.games[0] = {
+    ...state.games[0],
+    finishedAt: 123456,
+    rounds: [{
+      id: 'r_final',
+      updatedAt: 500,
+      entries: { p_one: { score: 10000 }, p_two: { score: 0 } },
+    }],
+  }
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  initial.props.content.props.onUpdate({ ...initial.props.content.props.game, rounds: [] })
+
+  globalThis.__scorebookTestReact.begin()
+  const afterDelete = App()
+  assert.equal(afterDelete.props.content.props.game.finishedAt, null)
+  const toast = afterDelete.props.undoToast.type(afterDelete.props.undoToast.props)
+  findElement(toast, (element) => element.type === 'button' && textOf(element) === 'Undo').props.onClick()
+
+  globalThis.__scorebookTestReact.begin()
+  const afterUndo = App()
+  assert.equal(afterUndo.props.content.props.game.finishedAt, 123456)
 })
 
 test('GameView player removal reaches App and queues a join-row tombstone', async () => {
