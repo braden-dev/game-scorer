@@ -108,6 +108,9 @@ function preferredRecord(current, candidate, currentFallback = 0, candidateFallb
   const candidateVersion = version(candidate, candidateFallback)
   if (candidateVersion > currentVersion) return candidate
   if (candidateVersion < currentVersion) return current
+  const currentTombstone = isTombstone(current)
+  const candidateTombstone = isTombstone(candidate)
+  if (currentTombstone !== candidateTombstone) return candidateTombstone ? candidate : current
   return stableValue(candidate) >= stableValue(current) ? candidate : current
 }
 

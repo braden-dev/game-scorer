@@ -219,6 +219,52 @@ test('deterministically merges conflicting equal-version records regardless of s
   assert.equal(localFirst.roster[0].name, 'Remote')
 })
 
+test('equal-version parent tombstones always beat live records', () => {
+  const live = {
+    activeGameId: 'g_equal',
+    roster: [],
+    games: [{
+      id: 'g_equal', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+      players: [], settings: {}, rounds: [], finishedAt: null,
+    }],
+  }
+  const tombstone = {
+    activeGameId: null,
+    roster: [],
+    games: [{
+      id: 'g_equal', gameId: 'farkle', createdAt: 100, updatedAt: 100, deletedAt: 100,
+      players: [], settings: {}, rounds: [], finishedAt: null,
+    }],
+  }
+
+  assert.deepEqual(mergeRemoteState(live, tombstone).games, [])
+  assert.deepEqual(mergeRemoteState(tombstone, live).games, [])
+})
+
+test('equal-version child tombstones always beat live records', () => {
+  const local = {
+    activeGameId: 'g_equal',
+    roster: [],
+    games: [{
+      id: 'g_equal', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+      players: [{ id: 'p_equal', name: 'Live Player', updatedAt: 100 }],
+      settings: {}, rounds: [], finishedAt: null,
+    }],
+  }
+  const remote = {
+    activeGameId: null,
+    roster: [],
+    games: [{
+      id: 'g_equal', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+      players: [{ id: 'p_equal', name: 'Deleted Player', updatedAt: 100, deletedAt: 100 }],
+      settings: {}, rounds: [], finishedAt: null,
+    }],
+  }
+
+  assert.deepEqual(mergeRemoteState(local, remote).games[0].players, [])
+  assert.deepEqual(mergeRemoteState(remote, local).games[0].players, [])
+})
+
 test('saveSyncStore writes the cloud key without affecting the legacy key', () => {
   const storage = new MemoryStorage()
   storage.setItem('gamescorer.v1', JSON.stringify({ games: [{ id: 'legacy' }], roster: [] }))
