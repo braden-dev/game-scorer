@@ -57,9 +57,15 @@ create table if not exists public.rounds (
   round_index integer not null check (round_index >= 0),
   entries jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now(),
-  deleted_at timestamptz,
-  unique (game_id, round_index)
+  deleted_at timestamptz
 );
+
+alter table public.rounds
+  drop constraint if exists rounds_game_id_round_index_key;
+
+create unique index if not exists rounds_live_game_round_index_idx
+  on public.rounds (game_id, round_index)
+  where deleted_at is null;
 
 drop index if exists public.rounds_game_idx;
 
