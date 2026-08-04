@@ -410,6 +410,48 @@ test('restore is idempotent when an offline delete never reached the live remote
   assert.equal(client.calls.some((call) => call.operation === 'update'), false)
 })
 
+test('rejects a restore row with an invalid version before writing it', async () => {
+  const deletedAt = '2026-08-04T00:00:10.000Z'
+  const serverAt = '2026-08-04T00:00:10.000Z'
+  const existing = {
+    id: 'r_invalid_restore', game_id: 'g_invalid_restore', round_index: 0,
+    entries: { p_one: { score: 42 } }, updated_at: serverAt, deleted_at: deletedAt,
+  }
+  const client = mutableClient({ rounds: [existing] })
+
+  await assert.rejects(
+    createCloudApi(client).restoreRows({ rounds: [{
+      ...existing, updated_at: 'not-a-timestamp', deleted_at: null,
+    }] }, { rounds: [{
+      id: existing.id, game_id: existing.game_id, updated_at: serverAt, deleted_at: deletedAt,
+    }] }),
+    /rounds.*invalid timestamp/,
+  )
+  assert.deepEqual(client.rows('rounds'), [existing])
+  assert.equal(client.calls.some((call) => call.operation === 'update'), false)
+})
+
+test('rejects a restore when the existing tombstone has an invalid version', async () => {
+  const serverAt = '2026-08-04T00:00:10.000Z'
+  const existing = {
+    id: 'r_invalid_tombstone', game_id: 'g_invalid_tombstone', round_index: 0,
+    entries: { p_one: { score: 42 } }, updated_at: serverAt, deleted_at: 'not-a-timestamp',
+  }
+  const client = mutableClient({ rounds: [existing] })
+
+  await assert.rejects(
+    createCloudApi(client).restoreRows({ rounds: [{
+      ...existing, updated_at: '2026-08-04T00:00:20.000Z', deleted_at: null,
+    }] }, { rounds: [{
+      id: existing.id, game_id: existing.game_id, updated_at: serverAt,
+      deleted_at: '2026-08-04T00:00:10.000Z',
+    }] }),
+    /rounds.*invalid timestamp/,
+  )
+  assert.deepEqual(client.rows('rounds'), [existing])
+  assert.equal(client.calls.some((call) => call.operation === 'update'), false)
+})
+
 test('reads every table with stable ordering and page-boundary pagination', async () => {
   const pageSize = 1000
   const tables = ['people', 'games', 'game_players', 'rounds']
@@ -512,6 +554,21 @@ test('softDelete rejects when no row matched the requested key', async () => {
     createCloudApi(client).softDelete('rounds', 'missing', '2026-01-03T00:00:00.000Z'),
     /rounds.*no rows matched/,
   )
+})
+
+test('rejects softDelete when the existing server version is invalid', async () => {
+  const existing = {
+    id: 'r_invalid_server_version', game_id: 'g_invalid_server_version', round_index: 0,
+    entries: { p_one: { score: 42 } }, updated_at: 'not-a-timestamp', deleted_at: null,
+  }
+  const client = mutableClient({ rounds: [existing] })
+
+  await assert.rejects(
+    createCloudApi(client).softDelete('rounds', existing.id, '2026-08-04T00:00:20.000Z'),
+    /rounds.*invalid timestamp/,
+  )
+  assert.deepEqual(client.rows('rounds'), [existing])
+  assert.equal(client.calls.some((call) => call.operation === 'update'), false)
 })
 
 test('rejects a stale upsert without overwriting a newer remote row', async () => {

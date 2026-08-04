@@ -222,8 +222,12 @@ async function upsertWithoutOverwriting(client, definition, row) {
 }
 
 async function restoreRow(client, definition, row, expectedTombstone) {
+  const requestedVersion = rowVersion(row)
+  assertValidVersion(definition.table, requestedVersion)
   const existing = await findExisting(client, definition, row)
   if (!existing) throw conflictError(definition.table)
+  const existingVersion = rowVersion(existing)
+  assertValidVersion(definition.table, existingVersion)
 
   if (timestamp(existing.deleted_at) === null) {
     if (sameRestorePayload(existing, row)) return existing
@@ -334,6 +338,7 @@ export function createCloudApi(client) {
       const existing = Array.isArray(data) ? data[0] ?? null : data
       if (!existing) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
       const existingVersion = rowVersion(existing)
+      assertValidVersion(definition.table, existingVersion)
       const requestedVersionValue = requestedVersion ?? Number.NEGATIVE_INFINITY
       if (requestedVersion !== null && timestamp(existing.deleted_at) === requestedVersion) return existing
       if (existingVersion > requestedVersionValue) {
