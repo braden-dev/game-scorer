@@ -1,3 +1,5 @@
+import { applyCloudSoftDelete } from './cloudState.js'
+
 const KEY = 'gamescorer.cloud.v1'
 const CLOUD_METADATA = Symbol.for('gamescorer.cloudMetadata')
 const SERIALIZED_METADATA_KEY = '__cloudMetadata'
@@ -453,8 +455,19 @@ export function saveSyncStore(store, storage) {
 export function enqueueMutation(store, mutation) {
   const normalized = normalizeStore(store)
   if (normalized.outbox.some((entry) => entry?.id === mutation?.id)) return normalized
+  const isSoftDelete = mutation?.operation === 'softDelete' || mutation?.operation === 'delete'
+  const cache = isSoftDelete
+    ? applyCloudSoftDelete(
+      normalized.cache,
+      mutation.entity,
+      mutation.entityId,
+      mutation.updatedAt ?? mutation.payload?.updatedAt ?? mutation.payload?.updated_at ?? mutation.createdAt,
+      mutation.payload,
+    )
+    : normalized.cache
   return {
     ...normalized,
+    cache,
     outbox: [...normalized.outbox, clone(mutation)],
   }
 }

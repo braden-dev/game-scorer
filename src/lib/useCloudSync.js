@@ -81,6 +81,7 @@ function applyPendingSoftDeletes(cache, outbox) {
       mutation.entity,
       mutation.entityId,
       mutationUpdatedAt(mutation),
+      mutation.payload,
     ),
     cache,
   )
@@ -283,15 +284,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
       createdAt: mutation.createdAt ?? Date.now(),
       ...mutation,
     }
-    let nextCache = cacheForState(stateRef.current, store.cache)
-    if (isSoftDeleteMutation(nextMutation)) {
-      nextCache = applyCloudSoftDelete(
-        nextCache,
-        nextMutation.entity,
-        nextMutation.entityId,
-        mutationUpdatedAt(nextMutation),
-      )
-    }
+    const nextCache = cacheForState(stateRef.current, store.cache)
     const next = enqueueMutation({
       ...store,
       cache: nextCache,

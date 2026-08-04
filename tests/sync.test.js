@@ -80,6 +80,33 @@ test('enqueues and removes mutations without mutating inputs or duplicating IDs'
   assert.deepEqual(next.outbox, [mutation])
 })
 
+test('enqueues a round delete with parent and payload metadata', () => {
+  const store = {
+    cache: {
+      activeGameId: 'g_round',
+      roster: [],
+      games: [{ id: 'g_round', rounds: [], players: [], settings: {} }],
+    },
+    outbox: [],
+    lastSyncAt: null,
+    lastError: null,
+    initialMigrationCompleted: false,
+  }
+  const next = enqueueMutation(store, {
+    id: 'm_round_delete',
+    entity: 'rounds',
+    entityId: 'r_removed',
+    operation: 'softDelete',
+    updatedAt: '2026-01-03T00:00:00.000Z',
+    payload: { gameId: 'g_round', roundIndex: 2, entries: { p_one: { score: 7 } } },
+  })
+
+  assert.deepEqual(next.cache[Symbol.for('gamescorer.cloudMetadata')].rounds, [{
+    gameId: 'g_round', id: 'r_removed', roundIndex: 2, entries: { p_one: { score: 7 } },
+    updatedAt: 1767398400000, deletedAt: '2026-01-03T00:00:00.000Z',
+  }])
+})
+
 test('retains failed replay data and its error in persistent storage', () => {
   const storage = new MemoryStorage()
   const mutation = { id: 'm_failed', entity: 'rounds', entityId: 'r_one', operation: 'upsert', payload: {}, createdAt: 100 }

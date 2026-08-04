@@ -172,7 +172,11 @@ function addCloudTombstone(metadata, group, record) {
   return [...records.filter((candidate) => !same.includes(candidate)), record]
 }
 
-export function applyCloudSoftDelete(cache, entity, id, updatedAt) {
+/**
+ * Round soft-delete payloads may include { gameId, roundIndex, entries } while
+ * entityId remains the scalar round id sent to the cloud API.
+ */
+export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = null) {
   const source = cache && typeof cache === 'object' ? cache : { games: [], roster: [], activeGameId: null }
   const group = mutationEntity(entity)
   const version = timestamp(updatedAt)
@@ -196,8 +200,20 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt) {
     nextGames = nextGames.filter((game) => game.id !== gameId)
     nextMetadata.games = addCloudTombstone(nextMetadata, 'games', { ...tombstone, id: gameId })
   } else if (group === 'gamePlayers' || group === 'rounds') {
-    const requestedGameId = mutationPart(id, 'gameId', 'game_id')
+    const roundDetails = group === 'rounds' && details && typeof details === 'object' ? details : null
     const requestedId = mutationPart(id, group === 'gamePlayers' ? 'personId' : 'id', group === 'gamePlayers' ? 'person_id' : 'id')
+    const priorRound = group === 'rounds'
+      ? metadataRecords(metadata, 'rounds')
+        .filter((record) => record.id === requestedId && record.gameId != null)
+        .reduce((latest, record) => (
+          !latest || tombstoneVersion(record) >= tombstoneVersion(latest) ? record : latest
+        ), null)
+      : null
+    const requestedGameId = mutationPart(id, 'gameId', 'game_id')
+      ?? mutationPart(roundDetails, 'gameId', 'game_id')
+      ?? priorRound?.gameId
+    const requestedRoundIndex = roundDetails?.roundIndex ?? roundDetails?.round_index ?? priorRound?.roundIndex
+    const requestedEntries = roundDetails?.entries ?? priorRound?.entries
     const records = []
     nextGames = nextGames.map((game) => {
       if (requestedGameId != null && game.id !== requestedGameId) return game
@@ -215,13 +231,20 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt) {
           ...tombstone,
           gameId: game.id,
           id: requestedId,
-          roundIndex: field(round, 'roundIndex', 'round_index'),
-          entries: round.entries ?? {},
+          roundIndex: requestedRoundIndex ?? field(round, 'roundIndex', 'round_index'),
+          entries: requestedEntries ?? round.entries ?? {},
         })
       }
       return matched.length ? { ...game, rounds: rounds.filter((round) => round.id !== requestedId) } : game
     })
-    if (records.length === 0) records.push({ ...tombstone, gameId: requestedGameId ?? null, id: requestedId })
+    if (records.length === 0) {
+      const record = { ...tombstone, gameId: requestedGameId ?? null, id: requestedId }
+      if (group === 'rounds') {
+        record.roundIndex = requestedRoundIndex
+        record.entries = requestedEntries ?? {}
+      }
+      records.push(record)
+    }
     for (const record of records) nextMetadata[group] = addCloudTombstone(nextMetadata, group, record)
   }
 

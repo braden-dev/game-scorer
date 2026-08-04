@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
+import { toRemoteRows } from '../src/lib/cloudState.js'
+import { loadSyncStore } from '../src/lib/sync.js'
 
 class MemoryStorage {
   #values = new Map()
@@ -403,11 +405,12 @@ test('keeps a scalar round tombstone after local removal and successful replay',
   const useCloudSync = await loadHook()
   const gate = deferred()
   const updates = []
+  let deleteArgs = null
   const api = {
     fetchSnapshot: async () => gate.promise,
     fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
     upsertRows: async () => {},
-    softDelete: async () => {},
+    softDelete: async (...args) => { deleteArgs = args },
   }
   const dependencies = { configured: true, api }
   const observed = { value: null }
@@ -438,6 +441,9 @@ test('keeps a scalar round tombstone after local removal and successful replay',
       observed.value.enqueueStateMutation({
         id: 'm_round_delete', entity: 'rounds', entityId: 'r_removed', operation: 'softDelete',
         updatedAt: '2026-01-03T00:00:00.000Z',
+        payload: {
+          gameId: 'g_round', roundIndex: 0, entries: { p_one: { score: 1 } },
+        },
       })
     })
 
@@ -453,9 +459,16 @@ test('keeps a scalar round tombstone after local removal and successful replay',
     await act(async () => { await gate.promise; await new Promise((resolve) => setTimeout(resolve, 0)) })
 
     assert.deepEqual(updates.at(-1).games[0].rounds, [])
+    assert.deepEqual(deleteArgs.slice(0, 2), ['rounds', 'r_removed'])
     const stored = JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1'))
     assert.equal(stored.cache.__cloudMetadata.rounds[0].id, 'r_removed')
-    assert.equal(stored.cache.__cloudMetadata.rounds[0].gameId, null)
+    assert.equal(stored.cache.__cloudMetadata.rounds[0].gameId, 'g_round')
+    assert.equal(stored.cache.__cloudMetadata.rounds[0].roundIndex, 0)
+    assert.deepEqual(stored.cache.__cloudMetadata.rounds[0].entries, { p_one: { score: 1 } })
+    assert.deepEqual(toRemoteRows(loadSyncStore(globalThis.localStorage).cache).rounds, [{
+      id: 'r_removed', game_id: 'g_round', round_index: 0, entries: { p_one: { score: 1 } },
+      updated_at: '2026-01-03T00:00:00.000Z', deleted_at: '2026-01-03T00:00:00.000Z',
+    }])
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
