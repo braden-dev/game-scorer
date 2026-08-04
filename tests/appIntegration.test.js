@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { fromRemoteRows, toRemoteRows } from '../src/lib/cloudState.js'
 import { loadSyncStore } from '../src/lib/sync.js'
-import { saveState, saveStateToCloudCache } from '../src/lib/storage.js'
+import { loadReconciledState, saveState, saveStateToCloudCache, shouldOfferInitialMigration } from '../src/lib/storage.js'
 
 class MemoryStorage {
   #values = new Map()
@@ -43,4 +43,23 @@ test('cloud cache hydration keeps the device-local active game while remote rows
   assert.equal(state.activeGameId, 'g_local')
   assert.equal(toRemoteRows(state).people[0].id, 'p_one')
   assert.equal('activeGameId' in toRemoteRows(state), false)
+})
+
+test('does not offer migration for a device that started without local data', () => {
+  assert.equal(shouldOfferInitialMigration({
+    configured: true,
+    hadLocalDataAtStartup: false,
+    initialMigrationCompleted: false,
+  }), false)
+  assert.equal(shouldOfferInitialMigration({
+    configured: true,
+    hadLocalDataAtStartup: true,
+    initialMigrationCompleted: false,
+  }), true)
+})
+
+test('does not expose a cloud backup before the first successful sync', () => {
+  const storage = new MemoryStorage()
+  saveStateToCloudCache({ games: [{ id: 'g_local' }], roster: [] }, storage)
+  assert.equal(loadReconciledState(storage), null)
 })

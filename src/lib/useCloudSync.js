@@ -151,11 +151,22 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     return committed
   }, [publishStore])
 
-  const updateSyncStore = useCallback((update) => {
+  const updateSyncStore = useCallback((update, removedMutationIds = []) => {
     const current = storeRef.current ?? loadSyncStore()
     const next = typeof update === 'function' ? update(current) : { ...current, ...update }
-    return commitStore(next)
+    return commitStore(next, removedMutationIds)
   }, [commitStore])
+
+  const cancelSyncMutations = useCallback((predicate) => {
+    const current = storeRef.current ?? loadSyncStore()
+    const removedMutationIds = current.outbox
+      .filter((mutation) => predicate?.(mutation))
+      .map((mutation) => mutation.id)
+    return updateSyncStore({
+      ...current,
+      outbox: current.outbox.filter((mutation) => !removedMutationIds.includes(mutation.id)),
+    }, removedMutationIds)
+  }, [updateSyncStore])
 
   const replayMutation = useCallback(async (mutation) => {
     if (isSoftDeleteMutation(mutation)) {
@@ -229,6 +240,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
 
       let replayedSoftDelete = false
       for (const mutation of [...store.outbox]) {
+        if (!(storeRef.current?.outbox ?? store.outbox).some((queued) => queued.id === mutation.id)) continue
         const response = await replayMutation(mutation)
         replayedSoftDelete ||= isSoftDeleteMutation(mutation)
         const latestStoreAfterReplay = storeRef.current ?? store
@@ -359,5 +371,5 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     }
   }, [configured, publishStore, setState, syncNow])
 
-  return { status, pendingCount, error, syncNow, enqueueStateMutation, updateSyncStore }
+  return { status, pendingCount, error, syncNow, enqueueStateMutation, updateSyncStore, cancelSyncMutations }
 }

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { loadState, saveState, saveStateToCloudCache } from './lib/storage.js'
+import { hasStateData, loadReconciledState, loadState, saveState, saveStateToCloudCache, shouldOfferInitialMigration } from './lib/storage.js'
 import { uid } from './lib/util.js'
 import { getGameDef, evaluate, migrateState } from './games/index.js'
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { loadSyncStore } from './lib/sync.js'
-import { toRemoteRows } from './lib/cloudState.js'
+import { toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { useCloudSync } from './lib/useCloudSync.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
@@ -16,6 +16,7 @@ import MigrationPanel from './components/MigrationPanel.jsx'
 
 export default function App() {
   const [state, setState] = useState(() => migrateState(loadState()))
+  const hadLocalDataAtStartup = useRef(hasStateData(state)).current
   const [newGameId, setNewGameId] = useState(null)
   const [showData, setShowData] = useState(false)
   const [initialMigrationCompleted, setInitialMigrationCompleted] = useState(
@@ -31,11 +32,11 @@ export default function App() {
     saveState(state)
   }, [state])
 
-  const fullStateMutation = useCallback((nextState) => ({
+  const stateChangeMutation = useCallback((nextState, previousState) => ({
     id: uid('m'),
     entity: 'scorebook',
     operation: 'upsert',
-    payload: { rows: toRemoteRows(nextState) },
+    payload: { rows: toRemoteRowsDelta(nextState, previousState) },
   }), [])
 
   /**
@@ -71,7 +72,7 @@ export default function App() {
     const person = { id: uid('p'), name }
     applyMutation(
       (prev) => ({ ...prev, roster: [...prev.roster, person] }),
-      fullStateMutation,
+      stateChangeMutation,
     )
     return person
   }
@@ -101,7 +102,7 @@ export default function App() {
     }
     applyMutation(
       (prev) => ({ ...prev, games: [...prev.games, game], activeGameId: game.id }),
-      fullStateMutation,
+      stateChangeMutation,
     )
     setNewGameId(null)
   }
@@ -125,7 +126,7 @@ export default function App() {
         const removedRound = previousGame?.rounds?.find(
           (round) => !next.rounds.some((candidate) => candidate.id === round.id),
         )
-        if (!removedRound) return fullStateMutation(nextState)
+        if (!removedRound) return stateChangeMutation(nextState, previousState)
         return {
           id: uid('m'),
           entity: 'rounds',
@@ -169,6 +170,7 @@ export default function App() {
   }
 
   const keepLocalForNow = () => {
+    sync.cancelSyncMutations((mutation) => mutation.initialMigration)
     sync.updateSyncStore({ initialMigrationCompleted: true })
     setInitialMigrationCompleted(true)
   }
@@ -198,10 +200,13 @@ export default function App() {
     setInitialMigrationCompleted(true)
   }
 
-  const getReconciledCloudState = () => {
-    const store = loadSyncStore()
-    return store.reconciledCache ?? store.cache
-  }
+  const getReconciledCloudState = () => loadReconciledState()
+
+  const migrationVisible = shouldOfferInitialMigration({
+    configured,
+    hadLocalDataAtStartup,
+    initialMigrationCompleted,
+  })
 
   if (newGameId) {
     return (
@@ -245,16 +250,16 @@ export default function App() {
           install={install}
           sync={configured ? sync : null}
           getReconciledCloudState={configured ? getReconciledCloudState : null}
-          migrationPending={configured && !initialMigrationCompleted}
+          migrationPending={migrationVisible}
           onPublishMigration={publishMigration}
           onImport={(imported) => applyMutation(
             () => migrateState(imported),
-            fullStateMutation,
+            stateChangeMutation,
           )}
           onClose={() => setShowData(false)}
         />
       )}
-      {configured && !initialMigrationCompleted && (state.games.length > 0 || state.roster.length > 0) && (
+      {migrationVisible && (
         <MigrationPanel
           state={state}
           onPublish={publishMigration}

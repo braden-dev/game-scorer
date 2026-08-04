@@ -21,6 +21,7 @@ export default function DataPanel({
 
   const gameCount = state.games.length
   const roundCount = state.games.reduce((sum, g) => sum + g.rounds.length, 0)
+  const reconciledCloudState = getReconciledCloudState?.() ?? null
 
   const doExport = async () => {
     setError(null)
@@ -58,8 +59,12 @@ export default function DataPanel({
 
   const doCloudExport = async () => {
     setError(null)
+    if (!reconciledCloudState) {
+      setError('Cloud backup is unavailable until the first successful cloud sync.')
+      return
+    }
     try {
-      const result = await shareOrDownloadBackup(getReconciledCloudState?.() ?? state)
+      const result = await shareOrDownloadBackup(reconciledCloudState)
       if (result === 'cancelled') setStatus(null)
       else setStatus(result === 'shared' ? 'Cloud backup shared.' : 'Cloud backup downloaded.')
     } catch {
@@ -104,7 +109,17 @@ export default function DataPanel({
 
       <div className="data-actions">
         <button type="button" className="btn primary" onClick={doExport}>Export backup</button>
-        {sync && <button type="button" className="btn primary" onClick={doCloudExport}>Export cloud backup</button>}
+        {sync && (
+          <button
+            type="button"
+            className="btn primary"
+            onClick={doCloudExport}
+            disabled={!reconciledCloudState}
+            title={reconciledCloudState ? undefined : 'Available after the first successful cloud sync'}
+          >
+            {reconciledCloudState ? 'Export cloud backup' : 'Cloud backup unavailable'}
+          </button>
+        )}
         <button type="button" className="btn ghost" onClick={() => fileRef.current?.click()}>Import backup</button>
         <input
           ref={fileRef}
@@ -115,8 +130,13 @@ export default function DataPanel({
         />
       </div>
 
-      {status && <p className="data-status good">{status}</p>}
-      {error && <p className="data-status bad">{error}</p>}
+      {status && <p className="data-status good" role="status" aria-live="polite">{status}</p>}
+      {error && <p className="data-status bad" role="alert" aria-live="assertive">{error}</p>}
+      {sync && !reconciledCloudState && (
+        <p className="hint" role="status" aria-live="polite">
+          Cloud backup becomes available after the first successful cloud sync.
+        </p>
+      )}
 
       <p className="hint">
         Importing merges — it adds games this device doesn't have and never overwrites what's

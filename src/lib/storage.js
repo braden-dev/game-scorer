@@ -52,3 +52,16 @@ export function saveStateToCloudCache(state, storage) {
   saveSyncStore(nextStore, storage)
   return nextStore
 }
+
+export function hasStateData(state) {
+  return Boolean(state?.games?.length || state?.roster?.length)
+}
+
+export function shouldOfferInitialMigration({ configured, hadLocalDataAtStartup, initialMigrationCompleted }) {
+  return Boolean(configured && hadLocalDataAtStartup && !initialMigrationCompleted)
+}
+
+export function loadReconciledState(storage) {
+  const store = loadSyncStore(storage)
+  return store.lastSyncAt && store.reconciledCache ? store.reconciledCache : null
+}

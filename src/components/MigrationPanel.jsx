@@ -30,14 +30,15 @@ export default function MigrationPanel({ state, onPublish, onKeepLocal }) {
         The shared scorebook is public and editable. Your existing JSON backup will not be changed.
       </p>
       <div className="data-actions">
-        <button type="button" className="btn primary" onClick={publish} disabled={publishing}>
+        <button type="button" className="btn primary" onClick={publish} disabled={publishing} aria-busy={publishing}>
           Publish to shared scorebook
         </button>
         <button type="button" className="btn ghost" onClick={onKeepLocal} disabled={publishing}>
           Keep local for now
         </button>
       </div>
-      {error && <p className="data-status bad">{error}</p>}
+      {publishing && <p className="data-status" role="status" aria-live="polite">Publishing local history…</p>}
+      {error && <p className="data-status bad" role="alert" aria-live="assertive">{error}</p>}
     </section>
   )
 }

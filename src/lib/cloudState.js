@@ -49,10 +49,6 @@ function isTombstone(row) {
   return field(row, 'deletedAt', 'deleted_at') != null
 }
 
-function relatedGames(rosterPersonId, games) {
-  return games.filter((game) => rows(game.players).some((player) => player?.id === rosterPersonId))
-}
-
 function withTimestamps(record, updatedAt, createdAt = undefined) {
   Object.defineProperty(record, 'updatedAt', {
     value: updatedAt,
@@ -325,11 +321,59 @@ export function normalizeName(name) {
   return String(name ?? '').trim().toLocaleLowerCase()
 }
 
+function addPersonCandidate(candidates, candidate) {
+  if (candidate?.id == null) return
+  const previous = candidates.get(candidate.id)
+  if (!previous) {
+    candidates.set(candidate.id, {
+      ...candidate,
+      createdAt: timestamp(candidate.createdAt),
+      updatedAt: timestamp(candidate.updatedAt) ?? timestamp(candidate.createdAt) ?? 0,
+    })
+    return
+  }
+
+  const candidateUpdatedAt = timestamp(candidate.updatedAt) ?? timestamp(candidate.createdAt) ?? 0
+  const candidateNameWins = candidate.sourcePriority > previous.sourcePriority
+    || (candidate.sourcePriority === previous.sourcePriority && candidateUpdatedAt >= previous.updatedAt)
+  candidates.set(candidate.id, {
+    ...previous,
+    name: candidateNameWins ? candidate.name : previous.name,
+    sourcePriority: candidateNameWins ? candidate.sourcePriority : previous.sourcePriority,
+    createdAt: [previous.createdAt, timestamp(candidate.createdAt)].filter((value) => value !== null).reduce(
+      (earliest, value) => Math.min(earliest, value),
+      Number.POSITIVE_INFINITY,
+    ),
+    updatedAt: Math.max(previous.updatedAt, candidateUpdatedAt),
+  })
+}
+
 export function toRemoteRows(state) {
   const roster = rows(state?.roster)
   const sourceGames = rows(state?.games)
   const metadata = state?.[CLOUD_METADATA] ?? {}
-  const livePersonIds = new Set(roster.map((person) => person.id))
+  const personCandidates = new Map()
+  for (const person of roster) {
+    addPersonCandidate(personCandidates, {
+      id: person.id,
+      name: person.name,
+      createdAt: field(person, 'createdAt', 'created_at'),
+      updatedAt: field(person, 'updatedAt', 'updated_at'),
+      sourcePriority: 2,
+    })
+  }
+  for (const game of sourceGames) {
+    for (const player of rows(game.players)) {
+      addPersonCandidate(personCandidates, {
+        id: player.id,
+        name: player.name,
+        createdAt: field(player, 'createdAt', 'created_at') ?? field(game, 'createdAt', 'created_at'),
+        updatedAt: field(player, 'updatedAt', 'updated_at') ?? field(game, 'updatedAt', 'updated_at'),
+        sourcePriority: 1,
+      })
+    }
+  }
+  const livePersonIds = new Set(personCandidates.keys())
   const liveGameIds = new Set(sourceGames.map((game) => game.id))
 
   const liveGames = sourceGames.map((game) => ({
@@ -357,27 +401,20 @@ export function toRemoteRows(state) {
     }))
   const games = [...liveGames, ...deletedGames]
 
-  const livePeople = roster.map((person) => {
-    const related = relatedGames(person.id, sourceGames)
-    const createdAt = timestamp(field(person, 'createdAt', 'created_at'))
-      ?? related.reduce((earliest, game) => {
-        const value = timestamp(field(game, 'createdAt', 'created_at'))
-        return value === null ? earliest : Math.min(earliest, value)
-      }, Number.POSITIVE_INFINITY)
-    const createdMilliseconds = Number.isFinite(createdAt) ? createdAt : 0
-    const updatedAt = timestamp(field(person, 'updatedAt', 'updated_at'))
-      ?? related.reduce((latest, game) => {
-        const value = timestamp(field(game, 'updatedAt', 'updated_at'))
-        return value === null ? latest : Math.max(latest, value)
-      }, createdMilliseconds)
+  const livePeople = [...personCandidates.values()].map((person) => {
+    const tombstone = metadataRecords(metadata, 'roster')
+      .filter((record) => record.id === person.id && isTombstone(record))
+      .reduce((latest, record) => (!latest || tombstoneVersion(record) >= tombstoneVersion(latest) ? record : latest), null)
+    const deleted = tombstone && tombstoneVersion(tombstone) >= person.updatedAt ? tombstone : null
+    const createdMilliseconds = Number.isFinite(person.createdAt) ? person.createdAt : 0
 
     return {
       id: person.id,
       name: person.name,
       normalized_name: normalizeName(person.name),
       created_at: isoTimestamp(createdMilliseconds, true),
-      updated_at: isoTimestamp(updatedAt, true),
-      deleted_at: isoTimestamp(field(person, 'deletedAt', 'deleted_at')),
+      updated_at: isoTimestamp(deleted ? field(deleted, 'updatedAt', 'updated_at') ?? field(deleted, 'deletedAt', 'deleted_at') : person.updatedAt, true),
+      deleted_at: isoTimestamp(field(deleted, 'deletedAt', 'deleted_at')),
     }
   })
   const deletedPeople = metadataRecords(metadata, 'roster')
@@ -471,6 +508,20 @@ export function toRemoteRows(state) {
   })
 
   return { people, games, gamePlayers, rounds }
+}
+
+export function toRemoteRowsDelta(state, previousState = {}) {
+  const previousGames = new Map(rows(previousState.games).map((game) => [game.id, game]))
+  const previousPeople = new Map(rows(previousState.roster).map((person) => [person.id, person]))
+  const changedGames = rows(state?.games).filter((game) => previousGames.get(game.id) !== game)
+  const changedPeople = rows(state?.roster).filter((person) => previousPeople.get(person.id) !== person)
+  const referencedPeople = new Set(changedGames.flatMap((game) => rows(game.players).map((player) => player.id)))
+  const people = [...new Map(
+    [...changedPeople, ...rows(state?.roster).filter((person) => referencedPeople.has(person.id))]
+      .map((person) => [person.id, person]),
+  ).values()]
+
+  return toRemoteRows({ ...state, games: changedGames, roster: people })
 }
 
 export function fromRemoteRows({ people, games, gamePlayers, rounds } = {}, activeGameId = null) {

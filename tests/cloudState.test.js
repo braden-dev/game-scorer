@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, normalizeName, toRemoteRows } from '../src/lib/cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, fromRemoteRows, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
 
 test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
@@ -60,6 +60,44 @@ test('converts nested state into timestamped remote rows with ISO timestamps', (
   const rows = toRemoteRows(state)
   assert.equal(typeof rows.games[0].created_at, 'string')
   assert.equal(rows.games[0].updated_at, '1970-01-01T00:00:00.200Z')
+})
+
+test('emits a people row for historical game players missing from the roster', () => {
+  const rows = toRemoteRows({
+    roster: [],
+    games: [{
+      id: 'g_history',
+      gameId: 'farkle',
+      createdAt: 100,
+      updatedAt: 200,
+      players: [{ id: 'p_history', name: 'Historical Player' }],
+      settings: {},
+      rounds: [],
+      finishedAt: null,
+    }],
+  })
+
+  assert.deepEqual(rows.people.map(({ id, name }) => ({ id, name })), [
+    { id: 'p_history', name: 'Historical Player' },
+  ])
+  assert.equal(rows.gamePlayers[0].person_id, 'p_history')
+})
+
+test('delta rows exclude unchanged local history from later normal mutations', () => {
+  const oldGame = {
+    id: 'g_local_only', gameId: 'farkle', createdAt: 100, updatedAt: 100,
+    players: [{ id: 'p_old', name: 'Old Player' }], settings: {}, rounds: [], finishedAt: null,
+  }
+  const newGame = {
+    id: 'g_new', gameId: 'farkle', createdAt: 200, updatedAt: 200,
+    players: [{ id: 'p_old', name: 'Old Player' }], settings: {}, rounds: [], finishedAt: null,
+  }
+  const previous = { roster: [{ id: 'p_old', name: 'Old Player' }], games: [oldGame] }
+  const next = { roster: previous.roster, games: [oldGame, newGame] }
+
+  const rows = toRemoteRowsDelta(next, previous)
+  assert.deepEqual(rows.games.map((game) => game.id), ['g_new'])
+  assert.deepEqual(rows.gamePlayers.map((player) => player.game_id), ['g_new'])
 })
 
 test('reconstructs nested state, resolves names, converts timestamps, and filters tombstones', () => {

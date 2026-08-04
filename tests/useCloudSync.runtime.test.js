@@ -654,3 +654,47 @@ test('keeps cloud backup state reconciled while an optimistic mutation is pendin
     browser.restore()
   }
 })
+
+test('cancels pending migration mutations before keeping local history', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const replayGate = deferred()
+  const observed = { hook: null }
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => replayGate.promise,
+    softDelete: async () => {},
+  }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    observed.hook.enqueueStateMutation({
+      id: 'm_initial_migration',
+      entity: 'scorebook',
+      operation: 'upsert',
+      initialMigration: true,
+      payload: { rows: { people: [], games: [], gamePlayers: [], rounds: [] } },
+    })
+    observed.hook.cancelSyncMutations((mutation) => mutation.initialMigration)
+    observed.hook.updateSyncStore({ initialMigrationCompleted: true })
+
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.deepEqual(stored.outbox, [])
+    assert.equal(stored.initialMigrationCompleted, true)
+    replayGate.resolve({ people: [], games: [], gamePlayers: [], rounds: [] })
+    await act(async () => { await replayGate.promise })
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
