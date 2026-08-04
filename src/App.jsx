@@ -7,9 +7,14 @@ import { cloudConfigured } from './lib/supabase.js'
 import { loadSyncStore } from './lib/sync.js'
 import { toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { useCloudSync } from './lib/useCloudSync.js'
+import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
 import NewGame from './components/NewGame.jsx'
 import GameView from './components/GameView.jsx'
+import People from './components/People.jsx'
+import PersonPage from './components/PersonPage.jsx'
+import Games from './components/Games.jsx'
+import Leaderboard from './components/Leaderboard.jsx'
 import DataPanel from './components/DataPanel.jsx'
 import InstallBanner from './components/InstallBanner.jsx'
 import MigrationPanel from './components/MigrationPanel.jsx'
@@ -18,6 +23,7 @@ export default function App() {
   const [state, setState] = useState(() => migrateState(loadState()))
   const hadLocalDataAtStartup = useRef(hasStateData(state)).current
   const [newGameId, setNewGameId] = useState(null)
+  const [route, setRoute] = useState(() => readRoute())
   const [showData, setShowData] = useState(false)
   const [initialMigrationCompleted, setInitialMigrationCompleted] = useState(
     () => loadSyncStore().initialMigrationCompleted,
@@ -26,6 +32,14 @@ export default function App() {
   const install = useInstallPrompt()
   const configured = cloudConfigured()
   const sync = useCloudSync(state, setState)
+
+  useEffect(() => subscribeToRoutes((nextRoute) => {
+    setRoute(nextRoute)
+    if (nextRoute.type !== 'game') {
+      setNewGameId(null)
+      setState((previous) => previous.activeGameId === null ? previous : { ...previous, activeGameId: null })
+    }
+  }), [])
 
   useEffect(() => {
     stateRef.current = state
@@ -68,8 +82,10 @@ export default function App() {
   // that scores it. That happens for real: an installed PWA can be running a
   // cached older build when a backup from a newer one is imported. Hide those
   // rather than render them — they stay in storage and reappear after an update.
-  const playableGames = state.games.filter((g) => getGameDef(g.gameId))
-  const activeGame = playableGames.find((g) => g.id === state.activeGameId) || null
+  const playableGames = state.games.filter((g) => !g.deletedAt && !g.deleted_at && getGameDef(g.gameId))
+  const routeEnvironment = typeof globalThis.window !== 'undefined' && Boolean(globalThis.window.location)
+  const requestedGameId = route.type === 'game' ? route.id : routeEnvironment ? null : state.activeGameId
+  const activeGame = playableGames.find((g) => g.id === requestedGameId) || null
 
   const addToRoster = (name) => {
     const person = { id: uid('p'), name }
@@ -108,6 +124,23 @@ export default function App() {
       stateChangeMutation,
     )
     setNewGameId(null)
+    navigate({ type: 'game', id: game.id })
+  }
+
+  const openGame = (id) => {
+    setState((prev) => ({ ...prev, activeGameId: id }))
+    navigate({ type: 'game', id })
+  }
+
+  const openNewGame = (gameId) => {
+    setNewGameId(gameId)
+    navigate({ type: 'new-game', gameId })
+  }
+
+  const closeGame = () => {
+    setState((prev) => ({ ...prev, activeGameId: null }))
+    setNewGameId(null)
+    navigate({ type: 'home' })
   }
 
   const updateGame = (updated) => {
@@ -228,13 +261,15 @@ export default function App() {
     initialMigrationCompleted,
   })
 
-  if (newGameId) {
+  const currentNewGameId = route.type === 'new-game' ? route.gameId : newGameId
+
+  if (currentNewGameId) {
     return (
       <NewGame
-        gameId={newGameId}
+        gameId={currentNewGameId}
         roster={state.roster}
-        onCancel={() => setNewGameId(null)}
-        onStart={(players, settings) => startGame(newGameId, players, settings)}
+        onCancel={() => { setNewGameId(null); navigate({ type: 'home' }) }}
+        onStart={(players, settings) => startGame(currentNewGameId, players, settings)}
         onAddToRoster={addToRoster}
         onRemoveFromRoster={removeFromRoster}
       />
@@ -247,22 +282,39 @@ export default function App() {
         game={activeGame}
         roster={state.roster}
         onUpdate={updateGame}
-        onBack={() => setState((prev) => ({ ...prev, activeGameId: null }))}
+        onBack={closeGame}
         onRematch={rematch}
         onAddToRoster={addToRoster}
       />
     )
   }
 
+  if (route.type === 'people') {
+    return <People roster={state.roster} games={playableGames} onNavigate={navigate} />
+  }
+
+  if (route.type === 'person') {
+    return <PersonPage personId={route.id} roster={state.roster} games={playableGames} onNavigate={navigate} />
+  }
+
+  if (route.type === 'leaderboard') {
+    return <Leaderboard roster={state.roster} games={playableGames} onNavigate={navigate} />
+  }
+
+  if (route.type === 'games') {
+    return <Games games={playableGames} onNavigate={navigate} />
+  }
+
   return (
     <>
       <Home
         games={playableGames}
-        onNew={setNewGameId}
-        onOpen={(id) => setState((prev) => ({ ...prev, activeGameId: id }))}
+        onNew={openNewGame}
+        onOpen={openGame}
         onDelete={deleteGame}
         onOpenData={() => setShowData(true)}
         installBanner={<InstallBanner install={install} />}
+        onNavigate={navigate}
       />
       {showData && (
         <DataPanel

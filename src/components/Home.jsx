@@ -1,8 +1,9 @@
 import { GAMES, evaluate } from '../games/index.js'
 import { relativeDate } from '../lib/util.js'
+import { navigate } from '../lib/router.js'
 import PlayerChip from './PlayerChip.jsx'
 
-function GameCard({ game, onOpen, onDelete }) {
+export function GameCard({ game, onOpen, onDelete }) {
   const { def, standings, status } = evaluate(game)
   const leader = standings[0]
   return (
@@ -31,12 +32,12 @@ function GameCard({ game, onOpen, onDelete }) {
           ))}
         </span>
       </button>
-      <button type="button" className="icon-btn danger" onClick={onDelete} aria-label="Delete game">🗑</button>
+      {onDelete && <button type="button" className="icon-btn danger" onClick={onDelete} aria-label="Delete game">🗑</button>}
     </li>
   )
 }
 
-export default function Home({ games, onNew, onOpen, onDelete, onOpenData, installBanner }) {
+export default function Home({ games, onNew, onOpen, onDelete, onOpenData, installBanner, onNavigate = navigate }) {
   const sorted = [...games].sort((a, b) => b.updatedAt - a.updatedAt)
   const active = sorted.filter((g) => !g.finishedAt)
   const done = sorted.filter((g) => g.finishedAt)
@@ -52,6 +53,12 @@ export default function Home({ games, onNew, onOpen, onDelete, onOpenData, insta
       </header>
 
       {installBanner}
+
+      <nav className="page-nav" aria-label="Scorebook pages">
+        <button type="button" className="chip" onClick={() => onNavigate({ type: 'people' })}>People</button>
+        <button type="button" className="chip" onClick={() => onNavigate({ type: 'leaderboard' })}>Leaderboard</button>
+        <button type="button" className="chip" onClick={() => onNavigate({ type: 'games' })}>Games</button>
+      </nav>
 
       <section>
         <h2 className="section-title">Start a game</h2>

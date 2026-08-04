@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { getGameDef } from '../games/index.js'
+import { filterPeople } from './People.jsx'
 import { SettingsForm } from './fields.jsx'
 import PlayerChip from './PlayerChip.jsx'
 
@@ -18,15 +19,20 @@ export default function NewGame({ gameId, roster, onCancel, onStart, onAddToRost
     e.preventDefault()
     const trimmed = name.trim()
     if (!trimmed) return
-    const existing = roster.find((p) => p.name.toLowerCase() === trimmed.toLowerCase())
-    if (existing) {
-      if (!selected.includes(existing.id)) toggle(existing.id)
-    } else {
-      const person = onAddToRoster(trimmed)
-      setSelected((prev) => [...prev, person.id])
-    }
+    const existing = filterPeople(roster).find((p) => p.name.trim().toLowerCase() === trimmed.toLowerCase())
+    if (existing) return
+    createPerson(trimmed)
+  }
+
+  const createPerson = (personName) => {
+    const person = onAddToRoster(personName)
+    setSelected((prev) => [...prev, person.id])
     setName('')
   }
+
+  const searchMatches = filterPeople(roster, name).filter((person) => !selected.includes(person.id))
+  const exactMatch = searchMatches.find((person) => person.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const availableRoster = filterPeople(roster).filter((person) => !selected.includes(person.id))
 
   const move = (index, delta) => {
     setSelected((prev) => {
@@ -82,11 +88,25 @@ export default function NewGame({ gameId, roster, onCancel, onStart, onAddToRost
           <button type="submit" className="btn primary" disabled={!name.trim()}>Add</button>
         </form>
 
-        {roster.filter((p) => !selected.includes(p.id)).length > 0 && (
+        {name.trim() && (
+          <div className="person-search-results" aria-label="People search results">
+            {searchMatches.map((person) => (
+              <button key={person.id} type="button" className="person-search-result" onClick={() => { toggle(person.id); setName('') }}>
+                Use existing <strong>{person.name}</strong>
+              </button>
+            ))}
+            <button type="button" className="person-search-result create" onClick={() => createPerson(name.trim())}>
+              Create new person “{name.trim()}”
+            </button>
+            {exactMatch && <p className="hint">Choose whether this is the existing person or a deliberately separate entry.</p>}
+          </div>
+        )}
+
+        {availableRoster.length > 0 && (
           <>
             <p className="hint">Tap to add someone you've played with before:</p>
             <div className="roster">
-              {roster.filter((p) => !selected.includes(p.id)).map((p) => (
+              {availableRoster.map((p) => (
                 <span key={p.id} className="roster-chip">
                   <button type="button" onClick={() => toggle(p.id)}>{p.name}</button>
                   <button
