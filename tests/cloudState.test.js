@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyCloudSoftDelete, copyCloudMetadata, filterRowsAlreadyInCloud, fromRemoteRows, migrationCounts, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
+import { applyCloudSoftDelete, copyCloudMetadata, filterRowsAlreadyInCloud, fromRemoteRows, mergeMigrationState, migrationCounts, normalizeName, toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
 
 test('normalizes names by trimming and locale-lowercasing', () => {
   assert.equal(normalizeName('  Jöhn DOE  '), 'jöhn doe')
@@ -200,6 +200,43 @@ test('first-run migration filters rows whose identities already exist in cloud',
   assert.deepEqual(filtered.games.map(({ id }) => id), ['g_new'])
   assert.deepEqual(filtered.gamePlayers.map(({ game_id, person_id }) => [game_id, person_id]), [['g_new', 'p_new']])
   assert.deepEqual(filtered.rounds.map(({ id }) => id), ['r_new'])
+})
+
+test('migration reconciliation gives cloud authority to same IDs while retaining local-only records', () => {
+  const local = {
+    activeGameId: 'g_shared',
+    roster: [
+      { id: 'p_shared', name: 'Local stale name' },
+      { id: 'p_local', name: 'Local-only person' },
+    ],
+    games: [{
+      id: 'g_shared',
+      gameId: 'farkle',
+      settings: { target: 100 },
+      players: [{ id: 'p_shared', name: 'Local stale name' }],
+      rounds: [{ id: 'r_shared', entries: { p_shared: { score: 10 } } }],
+      finishedAt: null,
+    }],
+  }
+  const cloud = {
+    activeGameId: null,
+    roster: [{ id: 'p_shared', name: 'Cloud authoritative name' }],
+    games: [{
+      id: 'g_shared',
+      gameId: 'farkle',
+      settings: { target: 500 },
+      players: [{ id: 'p_shared', name: 'Cloud authoritative name' }],
+      rounds: [{ id: 'r_shared', entries: { p_shared: { score: 900 } } }],
+      finishedAt: 123,
+    }],
+  }
+
+  const merged = mergeMigrationState(local, cloud)
+
+  assert.equal(merged.roster.find(({ id }) => id === 'p_shared').name, 'Cloud authoritative name')
+  assert.equal(merged.roster.some(({ id }) => id === 'p_local'), true)
+  assert.equal(merged.games[0].settings.target, 500)
+  assert.equal(merged.games[0].rounds[0].entries.p_shared.score, 900)
 })
 
 test('fromRemoteRows ignores malformed records, logs a diagnostic, and keeps valid records', () => {

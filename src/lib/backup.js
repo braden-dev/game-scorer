@@ -1,5 +1,60 @@
 const FORMAT = 'gamescorer-backup'
 const VERSION = 1
+const SUPPORTED_GAME_IDS = new Set(['farkle', 'dutch-blitz', 'three-thirteen'])
+const SETTING_TYPES = {
+  farkle: {
+    target: 'number', opening: 'number', straight: 'number', threePairs: 'number',
+    twoTriplets: 'number', multiRule: 'string',
+  },
+  'dutch-blitz': { target: 'number', blitzPenalty: 'number' },
+  'three-thirteen': {
+    rounds: 'number', faceValue: 'string', aceValue: 'number', jokerValue: 'number', firstOutBonus: 'number',
+  },
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validId(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function validSettings(gameId, settings) {
+  if (!isRecord(settings)) return false
+  return Object.entries(settings).every(([key, value]) => {
+    const expectedType = SETTING_TYPES[gameId]?.[key]
+    if (!expectedType) return true
+    return typeof value === expectedType && (expectedType !== 'number' || Number.isFinite(value))
+  })
+}
+
+function validPerson(person) {
+  return isRecord(person) && validId(person.id) && typeof person.name === 'string' && person.name.trim().length > 0
+}
+
+function validPlayer(player) {
+  return validPerson(player)
+    && (player.seatOrder === undefined || Number.isInteger(player.seatOrder))
+}
+
+function validRound(round, playerIds) {
+  if (!isRecord(round) || !validId(round.id)) return false
+  if (round.roundIndex !== undefined && !Number.isInteger(round.roundIndex)) return false
+  if (!isRecord(round.entries)) return false
+  return Object.entries(round.entries).every(([playerId, entry]) => playerIds.has(playerId) && isRecord(entry))
+}
+
+function validGame(game) {
+  if (!isRecord(game) || !validId(game.id) || !SUPPORTED_GAME_IDS.has(game.gameId)) return false
+  if (!validSettings(game.gameId, game.settings)) return false
+  if (!Array.isArray(game.players) || !Array.isArray(game.rounds)) return false
+  if (!game.players.every(validPlayer)) return false
+  const playerIds = new Set(game.players.map((player) => player.id))
+  if (playerIds.size !== game.players.length) return false
+  if (!game.rounds.every((round) => validRound(round, playerIds))) return false
+  return new Set(game.rounds.map((round) => round.id)).size === game.rounds.length
+}
 
 function filename() {
   const d = new Date()
@@ -63,7 +118,17 @@ export function parseBackup(text) {
   if (!Array.isArray(data.games) || !Array.isArray(data.roster)) {
     throw new Error('That backup is missing its games or players.')
   }
-  return data
+  const roster = data.roster.filter(validPerson)
+  const games = data.games.filter(validGame)
+  return {
+    ...data,
+    roster,
+    games,
+    invalid: {
+      players: data.roster.length - roster.length,
+      games: data.games.length - games.length,
+    },
+  }
 }
 
 /**
@@ -72,13 +137,19 @@ export function parseBackup(text) {
  * sharing an id is treated as the same record and left alone.
  */
 export function mergeBackup(state, backup) {
-  const gameIds = new Set(state.games.map((g) => g.id))
-  const rosterIds = new Set(state.roster.map((p) => p.id))
-  const rosterNames = new Set(state.roster.map((p) => p.name.toLowerCase()))
+  const sourceGames = Array.isArray(backup?.games) ? backup.games : []
+  const sourceRoster = Array.isArray(backup?.roster) ? backup.roster : []
+  const validGames = sourceGames.filter(validGame)
+  const validRoster = sourceRoster.filter(validPerson)
+  const invalidGames = (backup?.invalid?.games ?? 0) + sourceGames.length - validGames.length
+  const invalidPlayers = (backup?.invalid?.players ?? 0) + sourceRoster.length - validRoster.length
+  const gameIds = new Set((Array.isArray(state?.games) ? state.games : []).map((g) => g.id))
+  const rosterIds = new Set((Array.isArray(state?.roster) ? state.roster : []).map((p) => p.id))
+  const rosterNames = new Set((Array.isArray(state?.roster) ? state.roster : []).map((p) => p.name.toLowerCase()))
 
-  const newGames = backup.games.filter((g) => g && g.id && !gameIds.has(g.id))
-  const newPlayers = backup.roster.filter(
-    (p) => p && p.id && !rosterIds.has(p.id) && !rosterNames.has(p.name?.toLowerCase()),
+  const newGames = validGames.filter((g) => !gameIds.has(g.id))
+  const newPlayers = validRoster.filter(
+    (p) => !rosterIds.has(p.id) && !rosterNames.has(p.name.toLowerCase()),
   )
 
   return {
@@ -89,8 +160,10 @@ export function mergeBackup(state, backup) {
     },
     added: { games: newGames.length, players: newPlayers.length },
     skipped: {
-      games: backup.games.length - newGames.length,
-      players: backup.roster.length - newPlayers.length,
+      games: validGames.length - newGames.length,
+      players: validRoster.length - newPlayers.length,
+      invalidGames,
+      invalidPlayers,
     },
   }
 }

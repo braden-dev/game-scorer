@@ -342,6 +342,49 @@ test('first-run migration skips local rows already present in the cloud snapshot
   assert.deepEqual(mutation.payload.rows, { people: [], games: [], gamePlayers: [], rounds: [] })
 })
 
+test('first-run migration reconciles conflicting same-ID local rows to cloud authority before display', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const localState = gameState()
+  prepareStorage(localState)
+  globalThis.window.location = { pathname: '/' }
+  const cloudState = fromRemoteRows(toRemoteRows({
+    ...localState,
+    roster: [{ id: 'p_one', name: 'Cloud One' }, { id: 'p_two', name: 'Two' }],
+    games: [{
+      ...localState.games[0],
+      settings: { ...localState.games[0].settings, target: 500 },
+      players: [{ id: 'p_one', name: 'Cloud One' }, { id: 'p_two', name: 'Two' }],
+      rounds: [{ id: 'r_removed', entries: { p_one: { score: 900 }, p_two: { score: 700 } } }],
+    }],
+  }), null)
+  saveSyncStore({
+    cache: cloudState,
+    reconciledCache: cloudState,
+    lastSyncAt: '2026-08-04T00:00:00.000Z',
+    outbox: [],
+    initialMigrationCompleted: false,
+  })
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const appTree = App()
+  const migrationPanel = findElement(appTree, (element) => element.type?.name === 'MigrationPanel')
+  assert.ok(migrationPanel)
+
+  await migrationPanel.props.onPublish()
+
+  globalThis.__scorebookTestReact.begin()
+  const refreshedTree = App()
+  const home = findElement(refreshedTree, (element) => element.type?.name === 'Home')
+  assert.ok(home)
+  assert.equal(home.props.games[0].settings.target, 500)
+  assert.equal(home.props.games[0].rounds[0].entries.p_one.score, 900)
+  assert.equal(home.props.games[0].players[0].name, 'Cloud One')
+  assert.deepEqual(globalThis.__scorebookTestSync.mutations[0].payload.rows, {
+    people: [], games: [], gamePlayers: [], rounds: [],
+  })
+})
+
 test('JSON import stamps new rows with a fresh monotonic sync version and preserves created_at', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()

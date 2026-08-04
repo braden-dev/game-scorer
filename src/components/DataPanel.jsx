@@ -47,11 +47,16 @@ export default function DataPanel({
       const parts = []
       if (added.games) parts.push(`${added.games} game${added.games === 1 ? '' : 's'}`)
       if (added.players) parts.push(`${added.players} player${added.players === 1 ? '' : 's'}`)
-      setStatus(
-        parts.length
-          ? `Added ${parts.join(' and ')}.${skipped.games ? ` ${skipped.games} already here.` : ''}`
-          : 'Nothing new — everything in that file is already here.',
-      )
+      const skippedParts = []
+      if (skipped.games) skippedParts.push(`${skipped.games} game${skipped.games === 1 ? '' : 's'} already here`)
+      if (skipped.players) skippedParts.push(`${skipped.players} player${skipped.players === 1 ? '' : 's'} already here`)
+      if (skipped.invalidGames) skippedParts.push(`${skipped.invalidGames} malformed game${skipped.invalidGames === 1 ? '' : 's'} skipped`)
+      if (skipped.invalidPlayers) skippedParts.push(`${skipped.invalidPlayers} malformed player${skipped.invalidPlayers === 1 ? '' : 's'} skipped`)
+      const resultParts = [
+        parts.length ? `Added ${parts.join(' and ')}` : 'Nothing new',
+        ...skippedParts,
+      ]
+      setStatus(`${resultParts.join('. ')}.`)
     } catch (err) {
       setError(err.message)
     }

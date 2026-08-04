@@ -236,6 +236,85 @@ export function mergeCloudCache(cache, state) {
   return next
 }
 
+function mergeMigrationRecords(localRecords, cloudRecords, cloudTombstoneIds = new Set()) {
+  const local = rows(localRecords).filter((record) => !cloudTombstoneIds.has(record.id))
+  const cloud = rows(cloudRecords)
+  const cloudById = new Map(cloud.map((record) => [record.id, record]))
+  const merged = local.map((record) => cloudById.get(record.id) ?? record)
+  const localIds = new Set(local.map((record) => record.id))
+  return [...merged, ...cloud.filter((record) => !localIds.has(record.id))]
+}
+
+function cloudTombstoneIds(metadata, group, parentId = null) {
+  return new Set(metadataRecords(metadata, group)
+    .filter((record) => isTombstone(record))
+    .filter((record) => parentId == null || record.gameId === parentId)
+    .map((record) => record.id))
+}
+
+function mergeMigrationMetadata(localMetadata, cloudMetadata) {
+  const groups = ['roster', 'games', 'gamePlayers', 'rounds']
+  return Object.fromEntries(groups.map((group) => {
+    const local = metadataRecords(localMetadata, group)
+    const cloud = metadataRecords(cloudMetadata, group)
+    const cloudByIdentity = new Map(cloud.map((record) => [
+      remoteRowIdentity(group === 'roster' ? 'people' : group, {
+        id: record.id,
+        game_id: record.gameId,
+        person_id: group === 'gamePlayers' ? record.id : undefined,
+      }),
+      record,
+    ]))
+    const retainedLocal = local.filter((record) => {
+      const identity = group === 'gamePlayers'
+        ? `${record.gameId}\u0000${record.id}`
+        : group === 'rounds'
+          ? `${record.gameId}\u0000${record.id}`
+          : String(record.id)
+      return !cloudByIdentity.has(identity)
+    })
+    return [group, [...retainedLocal, ...cloud]]
+  }))
+}
+
+/**
+ * Reconciles a first-run local state with the complete cloud snapshot.
+ * Existing cloud identities win regardless of local timestamps, while local
+ * records that have no cloud identity remain available for additive migration.
+ */
+export function mergeMigrationState(localState, cloudState) {
+  const local = localState && typeof localState === 'object' ? localState : { games: [], roster: [] }
+  const cloud = cloudState && typeof cloudState === 'object' ? cloudState : { games: [], roster: [] }
+  const cloudMetadata = cloud[CLOUD_METADATA] ?? {}
+  const localMetadata = local[CLOUD_METADATA] ?? {}
+  const deletedPeople = cloudTombstoneIds(cloudMetadata, 'roster')
+  const deletedGames = cloudTombstoneIds(cloudMetadata, 'games')
+  const localGames = rows(local.games).filter((game) => !deletedGames.has(game.id))
+  const cloudGames = rows(cloud.games)
+  const cloudGamesById = new Map(cloudGames.map((game) => [game.id, game]))
+  const games = localGames.map((game) => {
+    const cloudGame = cloudGamesById.get(game.id)
+    if (!cloudGame) return game
+    const deletedPlayers = cloudTombstoneIds(cloudMetadata, 'gamePlayers', game.id)
+    const deletedRounds = cloudTombstoneIds(cloudMetadata, 'rounds', game.id)
+    return {
+      ...game,
+      ...cloudGame,
+      players: mergeMigrationRecords(game.players, cloudGame.players, deletedPlayers),
+      rounds: mergeMigrationRecords(game.rounds, cloudGame.rounds, deletedRounds),
+    }
+  })
+  const localGameIds = new Set(localGames.map((game) => game.id))
+  games.push(...cloudGames.filter((game) => !localGameIds.has(game.id)))
+  const merged = {
+    ...local,
+    roster: mergeMigrationRecords(rows(local.roster), rows(cloud.roster), deletedPeople),
+    games,
+    activeGameId: local.activeGameId ?? null,
+  }
+  return setMetadata(merged, mergeMigrationMetadata(localMetadata, cloudMetadata))
+}
+
 function mutationEntity(entity) {
   if (entity === 'game_players' || entity === 'gamePlayers') return 'gamePlayers'
   return entity

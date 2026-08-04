@@ -5,7 +5,7 @@ import { GAMES_BY_ID, getGameDef, evaluate, migrateState } from './games/index.j
 import { useInstallPrompt } from './lib/useInstallPrompt.js'
 import { cloudConfigured } from './lib/supabase.js'
 import { clone, loadSyncStore } from './lib/sync.js'
-import { filterRowsAlreadyInCloud, findCloudTombstone, stampMigrationRows, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
+import { filterRowsAlreadyInCloud, findCloudTombstone, mergeMigrationState, stampMigrationRows, toRemoteRows, toRemoteRowsDelta } from './lib/cloudState.js'
 import { CONFLICT_MESSAGE, useCloudSync } from './lib/useCloudSync.js'
 import { navigate, readRoute, subscribeToRoutes } from './lib/router.js'
 import Home from './components/Home.jsx'
@@ -540,7 +540,15 @@ export default function App() {
     // migration additive and prevents local history from competing with rows
     // that were already seeded by another device.
     await sync.syncNow({ initial: true })
-    const cloudRows = toRemoteRows(loadSyncStore().reconciledCache)
+    const cloudState = loadReconciledState()
+    if (cloudState) {
+      const reconciledState = mergeMigrationState(stateRef.current, cloudState)
+      stateRef.current = reconciledState
+      setState(reconciledState)
+      saveState(reconciledState)
+      saveStateToCloudCache(reconciledState)
+    }
+    const cloudRows = toRemoteRows(cloudState ?? loadSyncStore().reconciledCache)
     const syncVersion = migrationVersion(loadSyncStore().lastSyncAt)
     applyMutation(
       (prev) => prev,
