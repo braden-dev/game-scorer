@@ -173,6 +173,25 @@ test('merges by entity timestamps, applies newer tombstones, and keeps local act
   })
 })
 
+test('deterministically merges conflicting equal-version records regardless of source order', () => {
+  const local = {
+    activeGameId: null,
+    roster: [{ id: 'p_equal', name: 'Local', updatedAt: 100 }],
+    games: [],
+  }
+  const remote = {
+    activeGameId: null,
+    roster: [{ id: 'p_equal', name: 'Remote', updatedAt: 100 }],
+    games: [],
+  }
+
+  const localFirst = mergeRemoteState(local, remote)
+  const remoteFirst = mergeRemoteState(remote, local)
+
+  assert.deepEqual(localFirst.roster, remoteFirst.roster)
+  assert.equal(localFirst.roster[0].name, 'Remote')
+})
+
 test('saveSyncStore writes the cloud key without affecting the legacy key', () => {
   const storage = new MemoryStorage()
   storage.setItem('gamescorer.v1', JSON.stringify({ games: [{ id: 'legacy' }], roster: [] }))

@@ -87,6 +87,28 @@ function version(record, fallback = 0) {
   return Math.max(updatedAt, deletedAt ?? Number.NEGATIVE_INFINITY)
 }
 
+function stableValue(value) {
+  if (value === null) return 'null'
+  if (value === undefined) return 'undefined'
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(',')}]`
+  if (typeof value === 'object') {
+    return `{${Reflect.ownKeys(value)
+      .filter((key) => typeof key === 'string')
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableValue(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function preferredRecord(current, candidate, currentFallback = 0, candidateFallback = 0) {
+  const currentVersion = version(current, currentFallback)
+  const candidateVersion = version(candidate, candidateFallback)
+  if (candidateVersion > currentVersion) return candidate
+  if (candidateVersion < currentVersion) return current
+  return stableValue(candidate) >= stableValue(current) ? candidate : current
+}
+
 function isTombstone(record) {
   return recordField(record, 'deletedAt', 'deleted_at') != null
 }
@@ -104,7 +126,7 @@ function indexRecords(records, fallback) {
   for (const record of records) {
     if (record?.id == null) continue
     const previous = indexed.get(record.id)
-    if (!previous || version(record, fallback) >= version(previous, fallback)) indexed.set(record.id, record)
+    if (!previous || preferredRecord(previous, record, fallback, fallback) === record) indexed.set(record.id, record)
   }
   return indexed
 }
@@ -129,7 +151,7 @@ function mergeRecords(localRecords, remoteRecords, remoteFallback = 0, localFall
       if (isTombstone(localRecord)) continue
       chosen = localRecord
     } else {
-      chosen = version(remoteRecord, remoteFallback) >= version(localRecord, localFallback) ? remoteRecord : localRecord
+      chosen = preferredRecord(localRecord, remoteRecord, localFallback, remoteFallback)
       if (isTombstone(chosen)) continue
     }
 
@@ -340,8 +362,8 @@ function mergeGame(localGame, remoteGame, lastSyncAt, localMetadata, remoteMetad
     ? timestamp(recordField(remoteGame, 'updatedAt', 'updated_at')) ?? lastSyncAt ?? 0
     : lastSyncAt ?? 0
   const localFallback = timestamp(recordField(localGame, 'updatedAt', 'updated_at')) ?? 0
-  const game = parentPresent && version(remoteGame, remoteFallback) >= version(localGame, localFallback)
-    ? remoteGame
+  const game = parentPresent
+    ? preferredRecord(localGame, remoteGame, localFallback, remoteFallback)
     : localGame
   if (isTombstone(game)) return null
 
@@ -461,7 +483,7 @@ function compactMetadataRecords(records, group) {
       continue
     }
     const previous = newest.get(key)
-    if (!previous || version(record) >= version(previous)) newest.set(key, record)
+    if (!previous || preferredRecord(previous, record) === record) newest.set(key, record)
   }
   return [...newest.values(), ...unkeyed]
 }

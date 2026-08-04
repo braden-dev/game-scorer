@@ -314,6 +314,27 @@ test('rejects a stale upsert without overwriting a newer remote row', async () =
   assert.equal(client.rows('people')[0].name, 'Remote')
 })
 
+test('rejects an equal-version conflicting upsert but accepts an identical retry', async () => {
+  const updatedAt = '2026-01-02T00:00:00.000Z'
+  const client = mutableClient({ people: [{
+    id: 'p_equal', name: 'Remote', updated_at: updatedAt, deleted_at: null,
+  }] })
+  const api = createCloudApi(client)
+
+  await assert.rejects(
+    api.upsertRows({ people: [{
+      id: 'p_equal', name: 'Local', updated_at: updatedAt, deleted_at: null,
+    }] }),
+    /people.*conflicting equal-version row/,
+  )
+  assert.equal(client.rows('people')[0].name, 'Remote')
+
+  await api.upsertRows({ people: [{
+    id: 'p_equal', name: 'Remote', updated_at: updatedAt, deleted_at: null,
+  }] })
+  assert.equal(client.rows('people')[0].name, 'Remote')
+})
+
 test('rejects stale composite game-player upserts', async () => {
   const client = mutableClient({
     game_players: [{ game_id: 'g_one', person_id: 'p_one', name_snapshot: 'Remote', updated_at: '2026-01-02T00:00:00.000Z' }],
@@ -338,6 +359,25 @@ test('rejects a stale soft delete without overwriting a newer remote row', async
     /rounds.*newer remote row/,
   )
   assert.equal(client.rows('rounds')[0].deleted_at, null)
+})
+
+test('rejects an equal-version conflicting soft delete but accepts an idempotent retry', async () => {
+  const updatedAt = '2026-01-02T00:00:00.000Z'
+  const liveClient = mutableClient({
+    rounds: [{ id: 'r_equal', game_id: 'g_one', updated_at: updatedAt, deleted_at: null }],
+  })
+
+  await assert.rejects(
+    createCloudApi(liveClient).softDelete('rounds', 'r_equal', updatedAt),
+    /rounds.*conflicting equal-version row/,
+  )
+  assert.equal(liveClient.rows('rounds')[0].deleted_at, null)
+
+  const deletedClient = mutableClient({
+    rounds: [{ id: 'r_equal', game_id: 'g_one', updated_at: updatedAt, deleted_at: updatedAt }],
+  })
+  await createCloudApi(deletedClient).softDelete('rounds', 'r_equal', updatedAt)
+  assert.equal(deletedClient.rows('rounds')[0].deleted_at, updatedAt)
 })
 
 test('rejects a stale composite game-player soft delete', async () => {

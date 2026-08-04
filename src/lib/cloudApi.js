@@ -31,6 +31,24 @@ function rowVersion(row) {
   return versions.length ? Math.max(...versions) : Number.NEGATIVE_INFINITY
 }
 
+function stableValue(value) {
+  if (value === null) return 'null'
+  if (value === undefined) return 'undefined'
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(',')}]`
+  if (typeof value === 'object') {
+    return `{${Reflect.ownKeys(value)
+      .filter((key) => typeof key === 'string')
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableValue(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function samePayload(left, right) {
+  return stableValue(left) === stableValue(right)
+}
+
 function rowValue(row, column) {
   if (row?.[column] !== undefined) return row[column]
   const camel = column.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())
@@ -89,6 +107,10 @@ function conflictError(table) {
   return new Error(`Supabase ${table}: stale mutation; newer remote row exists`)
 }
 
+function equalVersionConflictError(table) {
+  return new Error(`Supabase ${table}: conflicting equal-version row`)
+}
+
 async function checkedWrite(query, table, action) {
   const data = await checked(query, table)
   const matched = Array.isArray(data) ? data.length > 0 : data != null
@@ -97,7 +119,12 @@ async function checkedWrite(query, table, action) {
 }
 
 async function compareAndSetRow(client, definition, row, existing) {
-  if (rowVersion(existing) > rowVersion(row)) throw conflictError(definition.table)
+  const existingVersion = rowVersion(existing)
+  const requestedVersion = rowVersion(row)
+  if (existingVersion > requestedVersion) throw conflictError(definition.table)
+  if (Number.isFinite(existingVersion) && existingVersion === requestedVersion && !samePayload(existing, row)) {
+    throw equalVersionConflictError(definition.table)
+  }
 
   let query = keyFilters(client.from(definition.table).update(row), definition, row)
   const expectedUpdatedAt = existing.updated_at
@@ -166,7 +193,14 @@ export function createCloudApi(client) {
       const data = await checked(query, definition.table)
       const existing = Array.isArray(data) ? data[0] ?? null : data
       if (!existing) throw new Error(`Supabase ${definition.table}: soft delete no rows matched`)
-      if (rowVersion(existing) > (requestedVersion ?? Number.NEGATIVE_INFINITY)) throw conflictError(definition.table)
+      const existingVersion = rowVersion(existing)
+      const requestedVersionValue = requestedVersion ?? Number.NEGATIVE_INFINITY
+      if (existingVersion > requestedVersionValue) throw conflictError(definition.table)
+      if (Number.isFinite(requestedVersion) && existingVersion === requestedVersion) {
+        const alreadyDeleted = timestamp(existing.deleted_at) === requestedVersion
+          && timestamp(existing.updated_at) === requestedVersion
+        if (!alreadyDeleted) throw equalVersionConflictError(definition.table)
+      }
 
       query = client.from(definition.table).update({ deleted_at: updatedAt, updated_at: updatedAt })
       for (const [column, camelName] of definition.keys) {
