@@ -25,9 +25,10 @@ export default function GameView({ game, roster, onUpdate, onBack, onRematch, on
   const saveRound = (entries) => {
     const rounds = game.rounds.slice()
     if (sheet.existing) {
-      rounds[sheet.roundIndex] = { ...rounds[sheet.roundIndex], entries }
+      const updatedAt = Math.max(Date.now(), (Number(rounds[sheet.roundIndex].updatedAt) || 0) + 1)
+      rounds[sheet.roundIndex] = { ...rounds[sheet.roundIndex], entries, updatedAt }
     } else {
-      rounds.push({ id: uid('r'), entries })
+      rounds.push({ id: uid('r'), entries, updatedAt: Date.now() })
     }
     onUpdate({ ...game, rounds })
     setSheet(null)

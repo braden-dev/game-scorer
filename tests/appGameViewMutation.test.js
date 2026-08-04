@@ -279,6 +279,36 @@ test('round deletion asks for confirmation and explains the brief Undo window', 
   assert.deepEqual(globalThis.__scorebookTestSync.mutations, [])
 })
 
+test('editing a synced round advances only that round in the queued mutation', async () => {
+  const App = await loadComponent('src/App.jsx')
+  const state = gameState()
+  state.games[0].rounds = [
+    { id: 'r_a', updatedAt: 100, entries: { p_one: { score: 500 }, p_two: { score: 700 } } },
+    { id: 'r_b', updatedAt: 900, entries: { p_one: { score: 300 }, p_two: { score: 100 } } },
+  ]
+  prepareStorage(state)
+  globalThis.window.location = { pathname: '/games/g_mutations' }
+  resetTestState()
+
+  globalThis.__scorebookTestReact.begin()
+  const initial = App()
+  const game = initial.props.content.props.game
+  initial.props.content.props.onUpdate({
+    ...game,
+    rounds: [
+      { ...game.rounds[0], entries: { p_one: { score: 800 }, p_two: { score: 700 } } },
+      game.rounds[1],
+    ],
+  })
+
+  const mutation = globalThis.__scorebookTestSync.mutations[0]
+  assert.equal(mutation.operation, 'upsert')
+  assert.equal(mutation.payload.rows.rounds.length, 1)
+  assert.equal(mutation.payload.rows.rounds[0].id, 'r_a')
+  assert.ok(Date.parse(mutation.payload.rows.rounds[0].updated_at) > 100)
+  assert.equal(mutation.payload.rows.rounds[0].entries.p_one.score, 800)
+})
+
 test('game deletion can be undone before the ten-second window expires', async () => {
   const App = await loadComponent('src/App.jsx')
   const state = gameState()

@@ -26,6 +26,24 @@ function snapshot(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function comparableRecord(value) {
+  if (!value) return null
+  const copy = snapshot(value)
+  delete copy.updatedAt
+  delete copy.updated_at
+  return JSON.stringify(copy)
+}
+
+function changedRecordIds(previousRecords = [], nextRecords = []) {
+  const previousById = new Map(previousRecords.map((record) => [record.id, record]))
+  return nextRecords
+    .filter((record) => {
+      const previous = previousById.get(record.id)
+      return !previous || comparableRecord(previous) !== comparableRecord(record)
+    })
+    .map((record) => record.id)
+}
+
 function revivedGame(game, deletedAt) {
   const updatedAt = Math.max(Date.now(), (Number(deletedAt) || 0) + 1)
   return {
@@ -67,11 +85,11 @@ export default function App() {
     saveState(state)
   }, [state])
 
-  const stateChangeMutation = useCallback((nextState, previousState) => ({
+  const stateChangeMutation = useCallback((nextState, previousState, options) => ({
     id: uid('m'),
     entity: 'scorebook',
     operation: 'upsert',
-    payload: { rows: toRemoteRowsDelta(nextState, previousState) },
+    payload: { rows: toRemoteRowsDelta(nextState, previousState, options) },
   }), [])
 
   /**
@@ -121,6 +139,13 @@ export default function App() {
     setUndoAction(null)
     if (action.mutationId) sync.cancelSyncMutations?.((mutation) => mutation.id === action.mutationId)
 
+    const mutationFactory = action.kind === 'round'
+      ? (nextState, previousState) => stateChangeMutation(nextState, previousState, {
+        gameId: action.gameId,
+        playerIds: [],
+        roundIds: [action.round.id],
+      })
+      : stateChangeMutation
     applyMutation((previous) => {
       if (action.kind === 'game') {
         if (previous.games.some((game) => game.id === action.game.id)) return previous
@@ -151,7 +176,7 @@ export default function App() {
         rounds,
       }, action.deletedAt)
       return { ...previous, games: previous.games.map((candidate) => candidate.id === game.id ? updatedGame : candidate) }
-    }, stateChangeMutation)
+    }, mutationFactory)
   }, [applyMutation, expireUndo, stateChangeMutation, sync])
 
   // A record for a game this build doesn't know about would crash every screen
@@ -229,11 +254,28 @@ export default function App() {
     )
     const removedRoundIndex = removedRound ? previousGame.rounds.indexOf(removedRound) : -1
     const removedRoundMutationId = removedRound ? uid('m') : null
+    const roundTimestamp = Date.now()
+    const gameTimestamp = Math.max(Date.now(), (Number(previousGame?.updatedAt) || 0) + 1)
+    const rounds = updated.rounds.map((round) => {
+      const previousRound = previousGame?.rounds?.find((candidate) => candidate.id === round.id)
+      if (previousRound && comparableRecord(previousRound) === comparableRecord(round)) return round
+      return {
+        ...round,
+        updatedAt: Math.max(
+          roundTimestamp,
+          (Number(previousRound?.updatedAt) || 0) + 1,
+          Number(round.updatedAt) || 0,
+        ),
+      }
+    })
     const next = {
       ...updated,
-      updatedAt: Date.now(),
-      finishedAt: status.finished ? (updated.finishedAt || Date.now()) : null,
+      rounds,
+      updatedAt: gameTimestamp,
+      finishedAt: status.finished ? (updated.finishedAt || gameTimestamp) : null,
     }
+    const changedRoundIds = changedRecordIds(previousGame?.rounds ?? [], next.rounds)
+    const changedPlayerIds = changedRecordIds(previousGame?.players ?? [], next.players)
     applyMutation(
       (prev) => ({
         ...prev,
@@ -247,7 +289,11 @@ export default function App() {
         const removedPlayers = previousGame?.players?.filter(
           (player) => !next.players.some((candidate) => candidate.id === player.id),
         ) ?? []
-        const mutations = [stateChangeMutation(nextState, previousState)]
+        const mutations = [stateChangeMutation(nextState, previousState, {
+          gameId: next.id,
+          playerIds: changedPlayerIds,
+          roundIds: changedRoundIds,
+        })]
         if (removedRound) mutations.push({
           id: removedRoundMutationId,
           entity: 'rounds',

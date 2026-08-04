@@ -534,10 +534,24 @@ export function migrationCounts(state) {
   }
 }
 
-export function toRemoteRowsDelta(state, previousState = {}) {
+export function toRemoteRowsDelta(state, previousState = {}, options = {}) {
   const previousGames = new Map(rows(previousState.games).map((game) => [game.id, game]))
   const previousPeople = new Map(rows(previousState.roster).map((person) => [person.id, person]))
-  const changedGames = rows(state?.games).filter((game) => previousGames.get(game.id) !== game)
+  const changedGames = rows(state?.games)
+    .filter((game) => previousGames.get(game.id) !== game)
+    .map((game) => {
+      if (options.gameId !== game.id) return game
+      const scoped = { ...game }
+      if (Array.isArray(options.roundIds)) {
+        const roundIds = new Set(options.roundIds)
+        scoped.rounds = rows(game.rounds).filter((round) => roundIds.has(round.id))
+      }
+      if (Array.isArray(options.playerIds)) {
+        const playerIds = new Set(options.playerIds)
+        scoped.players = rows(game.players).filter((player) => playerIds.has(player.id))
+      }
+      return scoped
+    })
   const changedPeople = rows(state?.roster).filter((person) => previousPeople.get(person.id) !== person)
   const referencedPeople = new Set(changedGames.flatMap((game) => rows(game.players).map((player) => player.id)))
   const people = [...new Map(

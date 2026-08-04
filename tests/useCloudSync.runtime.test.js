@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createCloudApi } from '../src/lib/cloudApi.js'
-import { toRemoteRows } from '../src/lib/cloudState.js'
+import { toRemoteRows, toRemoteRowsDelta } from '../src/lib/cloudState.js'
 import { loadSyncStore } from '../src/lib/sync.js'
 
 class MemoryStorage {
@@ -316,6 +316,98 @@ test('refreshes the shared row and preserves a pending CAS conflict error', asyn
     assert.equal(observed.hook.pendingCount, 1)
     assert.equal(observed.updates.at(-1).games[0].updatedAt, Date.parse(serverUpdatedAt))
     assert.deepEqual(JSON.parse(globalThis.localStorage.getItem('gamescorer.cloud.v1')).outbox.map((mutation) => mutation.id), ['m_conflict'])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('merges concurrent edits to different rounds without a stale CAS write', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const players = [{ id: 'p_one', name: 'One' }, { id: 'p_two', name: 'Two' }]
+  const previousGame = {
+    id: 'g_round_merge',
+    gameId: 'farkle',
+    createdAt: 1,
+    updatedAt: 900,
+    players,
+    settings: { target: 10000, opening: 0 },
+    rounds: [
+      { id: 'r_a', updatedAt: 100, entries: { p_one: { score: 100 }, p_two: { score: 50 } } },
+      { id: 'r_b', updatedAt: 1100, entries: { p_one: { score: 200 }, p_two: { score: 75 } } },
+    ],
+    finishedAt: null,
+  }
+  const localGame = {
+    ...previousGame,
+    updatedAt: 1300,
+    rounds: [
+      { id: 'r_a', updatedAt: 1300, entries: { p_one: { score: 900 }, p_two: { score: 50 } } },
+      previousGame.rounds[1],
+    ],
+  }
+  const remoteGame = {
+    ...previousGame,
+    updatedAt: 1200,
+    rounds: [
+      previousGame.rounds[0],
+      { id: 'r_b', updatedAt: 1400, entries: { p_one: { score: 800 }, p_two: { score: 75 } } },
+    ],
+  }
+  const remoteRows = () => toRemoteRows({ roster: players, games: [remoteGame] })
+  const server = mutableCloudClient(remoteRows())
+  const cloudApi = createCloudApi(server)
+  const upsertPayloads = []
+  const api = {
+    fetchSnapshot: async () => remoteRows(),
+    fetchRowsUpdatedSince: async () => remoteRows(),
+    upsertRows: async (rows) => {
+      upsertPayloads.push(rows)
+      return cloudApi.upsertRows(rows)
+    },
+    softDelete: async (...args) => cloudApi.softDelete(...args),
+  }
+  const mutationRows = toRemoteRowsDelta(
+    { roster: players, games: [localGame] },
+    { roster: players, games: [previousGame] },
+    { gameId: 'g_round_merge', playerIds: [], roundIds: ['r_a'] },
+  )
+  const observed = { hook: null, updates: [] }
+  function Harness() {
+    observed.hook = useCloudSync({ activeGameId: null, roster: players, games: [localGame] }, (nextState) => {
+      observed.updates.push(nextState)
+    }, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)) })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_round_merge',
+        entity: 'scorebook',
+        operation: 'upsert',
+        payload: { rows: mutationRows },
+        state: { activeGameId: null, roster: players, games: [localGame] },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(upsertPayloads.length, 1)
+    assert.deepEqual(upsertPayloads[0].rounds.map((round) => round.id), ['r_a'])
+    assert.equal(observed.hook.error, null)
+    assert.equal(observed.hook.pendingCount, 0)
+    assert.deepEqual(server.rows('rounds').find((round) => round.id === 'r_a').entries, localGame.rounds[0].entries)
+    assert.deepEqual(server.rows('rounds').find((round) => round.id === 'r_b').entries, remoteGame.rounds[1].entries)
+    const merged = observed.updates.at(-1).games[0]
+    assert.deepEqual(merged.rounds.map((round) => [round.id, round.entries]).sort(([left], [right]) => left.localeCompare(right)), [
+      ['r_a', localGame.rounds[0].entries],
+      ['r_b', remoteGame.rounds[1].entries],
+    ])
   } finally {
     await act(async () => { root.unmount() })
     browser.restore()
