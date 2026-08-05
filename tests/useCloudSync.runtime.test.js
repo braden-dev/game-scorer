@@ -401,6 +401,130 @@ test('retries an online initial snapshot failure with a steady full-snapshot tim
   }
 })
 
+test('retries a failed incremental refresh without pending mutations', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const timers = []
+  let incrementalCalls = 0
+  let shouldFail = true
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => {
+      incrementalCalls += 1
+      if (shouldFail) throw new Error('incremental refresh unavailable')
+      return {
+        people: [{ id: 'p_refresh', name: 'Refresh', updated_at: '2026-01-03T00:00:00.000Z' }],
+        games: [], gamePlayers: [], rounds: [],
+      }
+    },
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    globalThis.setTimeout = (callback, delay) => {
+      const timer = { callback: null, delay, cancelled: false, ran: false }
+      timer.callback = () => {
+        timer.ran = true
+        callback()
+      }
+      timers.push(timer)
+      return timer
+    }
+    globalThis.clearTimeout = (timer) => {
+      if (timer) timer.cancelled = true
+    }
+
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+    assert.equal(incrementalCalls, 0)
+
+    await act(async () => { await observed.hook.syncNow() })
+
+    assert.equal(incrementalCalls, 1)
+    assert.equal(timers.length, 1)
+    assert.equal(timers[0].delay, 50)
+
+    shouldFail = false
+    timers[0].callback()
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    assert.equal(incrementalCalls, 2)
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).cache.roster.map(({ id }) => id), ['p_refresh'])
+    assert.equal(timers.filter((timer) => !timer.cancelled && !timer.ran).length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+    browser.restore()
+  }
+})
+
+test('does not schedule an incremental refresh retry for a terminal conflict', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  const timers = []
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => { throw new Error('incremental refresh unavailable') },
+    upsertRows: async () => {},
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ games: [], roster: [], activeGameId: null }, () => {}, {
+      configured: true,
+      api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    globalThis.setTimeout = (callback, delay) => {
+      const timer = { callback, delay, cancelled: false }
+      timers.push(timer)
+      return timer
+    }
+    globalThis.clearTimeout = (timer) => {
+      if (timer) timer.cancelled = true
+    }
+
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+    observed.hook.updateSyncStore((store) => ({
+      ...store,
+      outbox: [{
+        id: 'm_terminal_conflict',
+        status: 'conflict',
+        operation: 'upsert',
+        entity: 'people',
+        payload: { rows: { people: [] } },
+      }],
+    }))
+
+    await act(async () => { await observed.hook.syncNow() })
+
+    assert.equal(timers.length, 0)
+  } finally {
+    await act(async () => { root.unmount() })
+    globalThis.setTimeout = realSetTimeout
+    globalThis.clearTimeout = realClearTimeout
+    browser.restore()
+  }
+})
+
 test('serializes a normal sync before an initial sync and preserves full snapshot results', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

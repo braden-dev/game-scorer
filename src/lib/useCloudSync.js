@@ -360,9 +360,11 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
     retryAttemptsRef.current = 0
   }
 
-  const scheduleRetry = useCallback(() => {
+  const scheduleRetry = useCallback(({ refresh = false } = {}) => {
     const hasReplayableWork = storeRef.current?.outbox.some(isReplayableMutation)
-    if (!mountedRef.current || !online() || !hasReplayableWork || retryTimerRef.current) return
+    const hasTerminalConflict = storeRef.current?.outbox.some(isConflictMutation)
+    if (!mountedRef.current || !online() || retryTimerRef.current
+      || (!hasReplayableWork && (!refresh || hasTerminalConflict))) return
 
     const delay = retryAttemptsRef.current < MAX_AUTOMATIC_RETRIES
       ? Math.min(
@@ -683,7 +685,7 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
         setStatus(online() ? 'error' : 'offline')
       }
       if (fullSnapshot && !snapshotSucceeded) scheduleInitialRetry()
-      else scheduleRetry()
+      else scheduleRetry({ refresh: !fullSnapshot })
       return { ok: false, reason: 'error', fullSnapshot: initial }
     }
   }, [clearInitialRetry, configured, publishStore, replayMutation, scheduleInitialRetry, scheduleRetry, setState])
