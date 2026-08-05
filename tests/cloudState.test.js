@@ -639,6 +639,33 @@ test('uses the deleted person snapshot when the live roster row was already filt
   }])
 })
 
+test('preserves rich game metadata when a pending delete is reapplied after the game disappears', () => {
+  const deletedAt = '2026-01-04T00:00:00.000Z'
+  const game = {
+    id: 'g_missing', gameId: 'farkle', createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-03T00:00:00.000Z', finishedAt: '2026-01-03T00:00:01.000Z',
+    settings: { target: 10000 }, players: [], rounds: [],
+  }
+
+  const deleted = applyCloudSoftDelete(
+    { roster: [], games: [], activeGameId: null },
+    'games',
+    game.id,
+    deletedAt,
+    { game },
+  )
+
+  assert.deepEqual(toRemoteRows(deleted).games, [{
+    id: game.id,
+    game_id: game.gameId,
+    created_at: game.createdAt,
+    updated_at: deletedAt,
+    finished_at: game.finishedAt,
+    settings: game.settings,
+    deleted_at: deletedAt,
+  }])
+})
+
 test('emits preserved local round data when recording a parent-keyed tombstone', () => {
   const deletedAt = '2026-01-03T00:00:02.000Z'
   const cache = {

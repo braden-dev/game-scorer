@@ -376,9 +376,16 @@ export function applyCloudSoftDelete(cache, entity, id, updatedAt, details = nul
     nextMetadata.roster = addCloudTombstone(nextMetadata, 'roster', deletedPerson)
   } else if (group === 'games') {
     const gameId = mutationPart(id, 'id', 'id')
+    const gameSnapshot = details?.game ?? details?.gameSnapshot ?? null
     const priorGame = nextGames.find((game) => game.id === gameId)
+      ?? metadataRecords(metadata, 'games').find((game) => game.id === gameId)
     nextGames = nextGames.filter((game) => game.id !== gameId)
-    nextMetadata.games = addCloudTombstone(nextMetadata, 'games', { ...priorGame, ...tombstone, id: gameId })
+    nextMetadata.games = addCloudTombstone(nextMetadata, 'games', {
+      ...gameSnapshot,
+      ...priorGame,
+      ...tombstone,
+      id: gameId,
+    })
   } else if (group === 'gamePlayers' || group === 'rounds') {
     const roundDetails = group === 'rounds' && details && typeof details === 'object' ? details : null
     const playerDetails = group === 'gamePlayers' && details && typeof details === 'object' ? details : null

@@ -538,6 +538,7 @@ export default function App() {
         entityId: id,
         operation: 'softDelete',
         updatedAt: deletedAt,
+        payload: { game: gameSnapshot },
       }),
     )
     if (game) showUndo({

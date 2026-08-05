@@ -185,6 +185,92 @@ function hasRows(rows) {
   return REMOTE_KEYS.some((key) => Array.isArray(rows?.[key]) && rows[key].length > 0)
 }
 
+function remoteRowIdentity(key, row) {
+  if (key === 'gamePlayers') {
+    const gameId = row?.game_id ?? row?.gameId
+    const personId = row?.person_id ?? row?.personId
+    return gameId == null || personId == null ? null : `${gameId}\u0000${personId}`
+  }
+  if (key === 'rounds') {
+    const gameId = row?.game_id ?? row?.gameId
+    return gameId == null || row?.id == null ? null : `${gameId}\u0000${row.id}`
+  }
+  return row?.id == null ? null : String(row.id)
+}
+
+function completedIdentitySets(completedRows) {
+  return Object.fromEntries(REMOTE_KEYS.map((key) => [
+    key,
+    new Set((Array.isArray(completedRows?.[key]) ? completedRows[key] : [])
+      .map((row) => remoteRowIdentity(key, row))
+      .filter((identity) => identity !== null)),
+  ]))
+}
+
+function filterRemoteRows(rows, completedRows) {
+  const identities = completedIdentitySets(completedRows)
+  const nextRows = { ...(rows ?? {}) }
+  for (const key of REMOTE_KEYS) {
+    if (Array.isArray(nextRows[key])) {
+      nextRows[key] = nextRows[key].filter((row) => !identities[key].has(remoteRowIdentity(key, row)))
+    }
+  }
+  return nextRows
+}
+
+function filterLocalStatePayload(payload, completedRows) {
+  const identities = completedIdentitySets(completedRows)
+  const nextPayload = { ...payload }
+  if (Array.isArray(nextPayload.roster)) {
+    nextPayload.roster = nextPayload.roster.filter((row) => !identities.people.has(remoteRowIdentity('people', row)))
+  }
+  if (Array.isArray(nextPayload.games)) {
+    nextPayload.games = nextPayload.games
+      .map((game) => ({
+        ...game,
+        players: Array.isArray(game?.players)
+          ? game.players.filter((player) => !identities.gamePlayers.has(remoteRowIdentity('gamePlayers', {
+            game_id: game.id,
+            person_id: player.id,
+          })))
+          : game?.players,
+        rounds: Array.isArray(game?.rounds)
+          ? game.rounds.filter((round) => !identities.rounds.has(remoteRowIdentity('rounds', {
+            game_id: game.id,
+            id: round.id,
+          })))
+          : game?.rounds,
+      }))
+      .filter((game) => !identities.games.has(remoteRowIdentity('games', game)))
+  }
+  return nextPayload
+}
+
+function filterMutationPayload(payload, entity, completedRows) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
+  if (payload.rows && typeof payload.rows === 'object' && !Array.isArray(payload.rows)) {
+    return { ...payload, rows: filterRemoteRows(payload.rows, completedRows) }
+  }
+  if (isLocalStatePayload(payload)) return filterLocalStatePayload(payload, completedRows)
+  if (REMOTE_KEYS.some((key) => Array.isArray(payload[key]))) return filterRemoteRows(payload, completedRows)
+
+  const key = remoteKey(entity)
+  if (key && payload.row && typeof payload.row === 'object' && !Array.isArray(payload.row)
+    && completedIdentitySets(completedRows)[key].has(remoteRowIdentity(key, payload.row))) {
+    return { rows: filterRemoteRows({ [key]: [payload.row] }, completedRows) }
+  }
+  return payload
+}
+
+function removeCompletedRowsFromMutation(mutation, completedRows) {
+  const next = { ...mutation, payload: filterMutationPayload(mutation.payload, mutation.entity, completedRows) }
+  if (next.restore && typeof next.restore === 'object') next.restore = filterRemoteRows(next.restore, completedRows)
+  if (next.payload?.restore && typeof next.payload.restore === 'object') {
+    next.payload = { ...next.payload, restore: filterRemoteRows(next.payload.restore, completedRows) }
+  }
+  return next
+}
+
 function canRebaseMutation(mutation) {
   return mutation?.operation === 'upsert' && Number(mutation.conflictAttempts ?? 0) < 1
 }
@@ -465,9 +551,26 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
           const refreshedRows = await apiRef.current.fetchSnapshot()
           const latestStoreAfterConflict = storeRef.current ?? store
           const latestActiveGameId = activeGameIdForSync(stateRef, latestStoreAfterConflict)
+          const completedRows = replayError?.completedRows
+          const completedCache = hasRows(completedRows)
+            ? mergeMutationResponse(latestStoreAfterConflict.cache, mutation, completedRows)
+            : latestStoreAfterConflict.cache
+          const completedReconciledCache = hasRows(completedRows)
+            ? mergeMutationResponse(
+              latestStoreAfterConflict.reconciledCache,
+              mutation,
+              completedRows,
+              completedCache,
+            )
+            : latestStoreAfterConflict.reconciledCache
           const remoteState = fromRemoteRows(refreshedRows, latestActiveGameId)
           const mergedConflictState = mergeRemoteState(
-            latestStoreAfterConflict.cache,
+            completedCache,
+            remoteState,
+            previousSyncAt,
+          )
+          const mergedReconciledConflictState = mergeRemoteState(
+            completedReconciledCache,
             remoteState,
             previousSyncAt,
           )
@@ -475,28 +578,46 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
             ...mergedConflictState,
             activeGameId: latestActiveGameId,
           }, mergedConflictState)
+          const refreshedReconciledCache = copyCloudMetadata({
+            ...mergedReconciledConflictState,
+            activeGameId: latestActiveGameId,
+          }, mergedReconciledConflictState)
+          const remainingMutation = hasRows(completedRows)
+            ? removeCompletedRowsFromMutation(mutation, completedRows)
+            : mutation
           const initialMigrationConflict = mutation.initialMigration && mutation.operation === 'upsert'
           const additiveMigration = initialMigrationConflict
-            ? filterInitialMigrationMutation(mutation, refreshedRows)
+            ? filterInitialMigrationMutation(remainingMutation, refreshedRows)
             : null
+          const remainingRows = rowsForMutation(remainingMutation)
+          if (hasRows(completedRows) && !hasRows(remainingRows)) {
+            store = commitStore({
+              ...removeMutation(latestStoreAfterConflict, mutation.id),
+              cache: refreshedCache,
+              reconciledCache: refreshedReconciledCache,
+            }, [mutation.id])
+            stateRef.current = refreshedCache
+            if (mountedRef.current) setState(refreshedCache)
+            continue
+          }
           const conflictedMutation = initialMigrationConflict
             ? additiveMigration
-            : canRebaseMutation(mutation)
-              ? rebaseMutation(mutation)
+            : canRebaseMutation(remainingMutation)
+              ? rebaseMutation(remainingMutation)
               : {
-                ...mutation,
+                ...remainingMutation,
                 status: 'conflict',
                 error: TERMINAL_CONFLICT_MESSAGE,
                 conflictedAt: new Date().toISOString(),
               }
-          conflictMessage = initialMigrationConflict || canRebaseMutation(mutation)
+          conflictMessage = initialMigrationConflict || canRebaseMutation(remainingMutation)
             ? CONFLICT_MESSAGE
             : TERMINAL_CONFLICT_MESSAGE
           if (initialMigrationConflict && !hasRows(rowsForMutation(additiveMigration))) {
             store = commitStore({
               ...removeMutation(latestStoreAfterConflict, mutation.id),
               cache: refreshedCache,
-              reconciledCache: copyCloudMetadata({ ...remoteState, activeGameId: latestActiveGameId }, remoteState),
+              reconciledCache: refreshedReconciledCache,
             }, [mutation.id])
             stateRef.current = refreshedCache
             if (mountedRef.current) setState(refreshedCache)
@@ -508,14 +629,14 @@ export function useCloudSync(currentState, setState, dependencies = {}) {
               queued.id === mutation.id ? conflictedMutation : queued
             )),
             cache: refreshedCache,
-            reconciledCache: copyCloudMetadata({ ...remoteState, activeGameId: latestActiveGameId }, remoteState),
+            reconciledCache: refreshedReconciledCache,
             lastError: CONFLICT_MESSAGE,
           })
           stateRef.current = refreshedCache
           if (mountedRef.current) {
             setState(refreshedCache)
             setError(conflictMessage)
-            setStatus(canRebaseMutation(mutation) ? 'error' : 'conflict')
+            setStatus(canRebaseMutation(remainingMutation) ? 'error' : 'conflict')
           }
           clearRetry()
           continue

@@ -541,6 +541,9 @@ test('game deletion advances beyond a future local game version', async () => {
     findElement(gameCard.type(gameCard.props), (element) => element.props?.['aria-label'] === 'Delete Farkle game').props.onClick()
 
     assert.equal(globalThis.__scorebookTestSync.mutations[0].updatedAt, 5001)
+    assert.equal(globalThis.__scorebookTestSync.mutations[0].payload.game.id, 'g_mutations')
+    assert.equal(globalThis.__scorebookTestSync.mutations[0].payload.game.gameId, 'farkle')
+    assert.deepEqual(globalThis.__scorebookTestSync.mutations[0].payload.game.settings, state.games[0].settings)
   } finally {
     Date.now = originalNow
   }
@@ -686,6 +689,10 @@ test('game deletion can be undone before the ten-second window expires', async (
   assert.ok(deleteButton)
   deleteButton.props.onClick()
   assert.deepEqual(confirmations, ['Delete this Farkle game? Undo is available for 10 seconds.'])
+  const deleteMutation = globalThis.__scorebookTestSync.mutations.find(({ operation }) => operation === 'softDelete')
+  assert.equal(deleteMutation.payload.game.id, 'g_mutations')
+  assert.equal(deleteMutation.payload.game.gameId, 'farkle')
+  assert.deepEqual(deleteMutation.payload.game.settings, state.games[0].settings)
 
   globalThis.__scorebookTestReact.begin()
   const appAfterDelete = App()

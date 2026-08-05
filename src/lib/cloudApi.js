@@ -195,6 +195,14 @@ function equalVersionConflictError(table) {
   return new Error(`Supabase ${table}: conflicting equal-version row`)
 }
 
+function attachCompletedRows(error, canonicalRows) {
+  if (error && typeof error === 'object' && canonicalRows
+    && Object.values(canonicalRows).some((rows) => rows.length > 0)) {
+    error.completedRows = canonicalRows
+  }
+  return error
+}
+
 function assertValidVersion(table, version) {
   if (version === INVALID_VERSION) throw new Error(`Supabase ${table}: invalid timestamp in row version`)
 }
@@ -299,51 +307,59 @@ export function createCloudApi(client) {
 
     async upsertRows(rows = {}, { additive = false } = {}) {
       const canonicalRows = Object.fromEntries(TABLES.map((definition) => [definition.key, []]))
-      for (const definition of TABLES) {
-        const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
-        for (const row of payload) {
-          const requestedVersion = rowVersion(row)
-          assertValidVersion(definition.table, requestedVersion)
-          const existing = await findExisting(client, definition, row)
-          if (existing) {
-            const existingVersion = rowVersion(existing)
-            assertValidVersion(definition.table, existingVersion)
-            if (!additive && existingVersion > requestedVersion && !sameCanonicalPayload(existing, row)) {
-              throw conflictError(definition.table)
+      try {
+        for (const definition of TABLES) {
+          const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
+          for (const row of payload) {
+            const requestedVersion = rowVersion(row)
+            assertValidVersion(definition.table, requestedVersion)
+            const existing = await findExisting(client, definition, row)
+            if (existing) {
+              const existingVersion = rowVersion(existing)
+              assertValidVersion(definition.table, existingVersion)
+              if (!additive && existingVersion > requestedVersion && !sameCanonicalPayload(existing, row)) {
+                throw conflictError(definition.table)
+              }
             }
+            canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row, { additive }))
           }
-          canonicalRows[definition.key].push(await upsertWithoutOverwriting(client, definition, row, { additive }))
         }
+      } catch (error) {
+        throw attachCompletedRows(error, canonicalRows)
       }
       return canonicalRows
     },
 
     async restoreRows(rows = {}, expectedTombstones = {}) {
       const canonicalRows = Object.fromEntries(TABLES.map((definition) => [definition.key, []]))
-      for (const definition of TABLES) {
-        const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
-        const expectedRows = Array.isArray(expectedTombstones[definition.key])
-          ? expectedTombstones[definition.key]
-          : []
-        const positionColumn = definition.key === 'rounds'
-          ? 'round_index'
-          : definition.key === 'gamePlayers' ? 'seat_order' : null
-        const orderedRows = payload
-          .map((row) => ({
-            row,
-            expectedTombstone: expectedRows.find((candidate) => sameEntityKey(definition, candidate, row)),
-          }))
-          .sort((left, right) => {
-            const expectedOrder = Number(Boolean(left.expectedTombstone)) - Number(Boolean(right.expectedTombstone))
-            if (expectedOrder !== 0) return expectedOrder
-            if (!positionColumn) return 0
-            return (Number(rowValue(right.row, positionColumn)) || 0) - (Number(rowValue(left.row, positionColumn)) || 0)
-          })
-        for (const { row, expectedTombstone } of orderedRows) {
-          canonicalRows[definition.key].push(expectedTombstone
-            ? await restoreRow(client, definition, row, expectedTombstone)
-            : await upsertWithoutOverwriting(client, definition, row))
+      try {
+        for (const definition of TABLES) {
+          const payload = Array.isArray(rows[definition.key]) ? rows[definition.key] : []
+          const expectedRows = Array.isArray(expectedTombstones[definition.key])
+            ? expectedTombstones[definition.key]
+            : []
+          const positionColumn = definition.key === 'rounds'
+            ? 'round_index'
+            : definition.key === 'gamePlayers' ? 'seat_order' : null
+          const orderedRows = payload
+            .map((row) => ({
+              row,
+              expectedTombstone: expectedRows.find((candidate) => sameEntityKey(definition, candidate, row)),
+            }))
+            .sort((left, right) => {
+              const expectedOrder = Number(Boolean(left.expectedTombstone)) - Number(Boolean(right.expectedTombstone))
+              if (expectedOrder !== 0) return expectedOrder
+              if (!positionColumn) return 0
+              return (Number(rowValue(right.row, positionColumn)) || 0) - (Number(rowValue(left.row, positionColumn)) || 0)
+            })
+          for (const { row, expectedTombstone } of orderedRows) {
+            canonicalRows[definition.key].push(expectedTombstone
+              ? await restoreRow(client, definition, row, expectedTombstone)
+              : await upsertWithoutOverwriting(client, definition, row))
+          }
         }
+      } catch (error) {
+        throw attachCompletedRows(error, canonicalRows)
       }
       return canonicalRows
     },

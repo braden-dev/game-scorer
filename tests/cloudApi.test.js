@@ -320,6 +320,33 @@ test('upsertRows supplies conflict keys while retaining version-aware updates', 
   ])
 })
 
+test('attaches completed rows when a later upsert conflicts without overwriting the remote row', async () => {
+  const remoteRow = {
+    id: 'p_conflict_later', name: 'Remote winner',
+    updated_at: '2026-08-04T00:00:02.000Z', deleted_at: null,
+  }
+  const firstRow = {
+    id: 'p_completed_first', name: 'Completed first',
+    updated_at: '2026-08-04T00:00:01.000Z', deleted_at: null,
+  }
+  const client = mutableClient({ people: [remoteRow] })
+
+  await assert.rejects(
+    createCloudApi(client).upsertRows({ people: [firstRow, {
+      ...remoteRow, name: 'Stale local', updated_at: '2026-08-04T00:00:00.000Z',
+    }] }),
+    (error) => {
+      assert.match(error.message, /people.*newer remote row/)
+      assert.deepEqual(error.completedRows, {
+        people: [firstRow], games: [], gamePlayers: [], rounds: [],
+      })
+      return true
+    },
+  )
+
+  assert.deepEqual(client.rows('people'), [remoteRow, firstRow])
+})
+
 test('accepts a newly inserted row after PostgreSQL normalizes timestamp formatting', async () => {
   const client = mutableClient({}, { normalizeTimestamps: true })
 

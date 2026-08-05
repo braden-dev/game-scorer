@@ -1410,6 +1410,146 @@ test('rebases an entity-level upsert conflict with a fresh row timestamp', async
   }
 })
 
+test('retains a completed first row and rebases only the remaining rows after a second-row upsert conflict', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const upsertPayloads = []
+  const emptyRows = { people: [], games: [], gamePlayers: [], rounds: [] }
+  let snapshotRows = emptyRows
+  const api = {
+    fetchSnapshot: async () => snapshotRows,
+    fetchRowsUpdatedSince: async () => emptyRows,
+    upsertRows: async (rows) => {
+      upsertPayloads.push(rows)
+      if (upsertPayloads.length === 1) {
+        const error = new Error('Supabase people: stale mutation; newer remote row exists')
+        error.completedRows = {
+          people: [{ ...rows.people[0], name: 'Canonical first' }],
+          games: [], gamePlayers: [], rounds: [],
+        }
+        snapshotRows = error.completedRows
+        throw error
+      }
+      return rows
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ activeGameId: null, games: [], roster: [] }, () => {}, {
+      configured: true, api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_partial_upsert', entity: 'scorebook', operation: 'upsert',
+        payload: { rows: {
+          people: [
+            { id: 'p_completed_first', name: 'First', updated_at: '2026-08-04T00:00:01.000Z' },
+            { id: 'p_remaining_second', name: 'Second', updated_at: '2026-08-04T00:00:02.000Z' },
+          ],
+          games: [], gamePlayers: [], rounds: [],
+        } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(upsertPayloads.length, 2)
+    assert.deepEqual(upsertPayloads[0].people.map(({ id }) => id), ['p_completed_first', 'p_remaining_second'])
+    assert.deepEqual(upsertPayloads[1].people.map(({ id }) => id), ['p_remaining_second'])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).cache.roster.map(({ id }) => id).sort(), [
+      'p_completed_first', 'p_remaining_second',
+    ])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).reconciledCache.roster.map(({ id }) => id), [
+      'p_completed_first',
+    ])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('retains completed restore rows and leaves only the remaining row and tombstone in a terminal conflict', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const restoreCalls = []
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    restoreRows: async (rows, restore) => {
+      restoreCalls.push({ rows, restore })
+      const error = new Error('Supabase rounds: stale mutation; newer remote row exists')
+      error.completedRows = {
+        people: [], games: [], gamePlayers: [],
+        rounds: [{ ...rows.rounds[0], entries: { p_one: { score: 11 } }, deleted_at: null }],
+      }
+      throw error
+    },
+    softDelete: async () => {},
+  }
+  const state = {
+    activeGameId: 'g_restore_partial',
+    roster: [{ id: 'p_one', name: 'One' }],
+    games: [{
+      id: 'g_restore_partial', gameId: 'farkle', createdAt: 1, updatedAt: 1,
+      players: [{ id: 'p_one', name: 'One' }], settings: {},
+      rounds: [
+        { id: 'r_completed', entries: { p_one: { score: 1 } } },
+        { id: 'r_remaining', entries: { p_one: { score: 2 } } },
+      ], finishedAt: null,
+    }],
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync(state, () => {}, { configured: true, api })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_partial_restore', entity: 'scorebook', operation: 'restore',
+        payload: { rows: {
+          people: [], games: [], gamePlayers: [],
+          rounds: [
+            { id: 'r_completed', game_id: 'g_restore_partial', round_index: 0, entries: { p_one: { score: 1 } }, updated_at: '2026-08-04T00:00:01.000Z', deleted_at: null },
+            { id: 'r_remaining', game_id: 'g_restore_partial', round_index: 1, entries: { p_one: { score: 2 } }, updated_at: '2026-08-04T00:00:02.000Z', deleted_at: null },
+          ],
+        } },
+        restore: { rounds: [
+          { id: 'r_completed', game_id: 'g_restore_partial', updated_at: '2026-08-03T00:00:01.000Z', deleted_at: '2026-08-03T00:00:01.000Z' },
+          { id: 'r_remaining', game_id: 'g_restore_partial', updated_at: '2026-08-03T00:00:02.000Z', deleted_at: '2026-08-03T00:00:02.000Z' },
+        ] },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(restoreCalls.length, 1)
+    assert.deepEqual(restoreCalls[0].rows.rounds.map(({ id }) => id), ['r_completed', 'r_remaining'])
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(stored.outbox[0].status, 'conflict')
+    assert.deepEqual(stored.outbox[0].payload.rows.rounds.map(({ id }) => id), ['r_remaining'])
+    assert.deepEqual(stored.outbox[0].restore.rounds.map(({ id }) => id), ['r_remaining'])
+    assert.deepEqual(stored.cache.games[0].rounds.map(({ id }) => id), ['r_completed', 'r_remaining'])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('continues replay after a local-state CAS conflict and retries nested rows', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()
