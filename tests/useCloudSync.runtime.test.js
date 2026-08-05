@@ -1550,6 +1550,148 @@ test('retains completed restore rows and leaves only the remaining row and tombs
   }
 })
 
+test('retries nested local-state rows when the parent game completed during a CAS conflict', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const upsertPayloads = []
+  let snapshotRows = { people: [], games: [], gamePlayers: [], rounds: [] }
+  const api = {
+    fetchSnapshot: async () => snapshotRows,
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async (rows) => {
+      upsertPayloads.push(rows)
+      if (upsertPayloads.length === 1) {
+        const error = new Error('Supabase games: stale mutation; newer remote row exists')
+        error.completedRows = {
+          people: [],
+          games: [rows.games[0]],
+          gamePlayers: [],
+          rounds: [],
+        }
+        snapshotRows = error.completedRows
+        throw error
+      }
+      return rows
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ activeGameId: null, games: [], roster: [] }, () => {}, {
+      configured: true, api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_nested_local_state_conflict',
+        entity: 'scorebook',
+        operation: 'upsert',
+        payload: {
+          roster: [{ id: 'p_nested', name: 'Nested', updatedAt: '2026-08-04T00:00:01.000Z' }],
+          games: [{
+            id: 'g_nested',
+            gameId: 'farkle',
+            createdAt: '2026-08-04T00:00:01.000Z',
+            updatedAt: '2026-08-04T00:00:01.000Z',
+            players: [{ id: 'p_nested', name: 'Nested', seatOrder: 0 }],
+            rounds: [{ id: 'r_nested', roundIndex: 0, entries: { p_nested: { score: 7 } } }],
+            settings: {},
+          }],
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(upsertPayloads.length, 2)
+    assert.deepEqual(upsertPayloads[0].games.map(({ id }) => id), ['g_nested'])
+    assert.deepEqual(upsertPayloads[1].games, [])
+    assert.deepEqual(upsertPayloads[1].gamePlayers.map(({ game_id, person_id }) => [game_id, person_id]), [
+      ['g_nested', 'p_nested'],
+    ])
+    assert.deepEqual(upsertPayloads[1].rounds.map(({ game_id, id }) => [game_id, id]), [
+      ['g_nested', 'r_nested'],
+    ])
+    assert.deepEqual(loadSyncStore(globalThis.localStorage).outbox, [])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
+test('filters restore tombstones when a local-state restore keeps nested rows after a parent conflict', async () => {
+  const browser = browserHarness()
+  const useCloudSync = await loadHook()
+  const restoreCalls = []
+  const api = {
+    fetchSnapshot: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    fetchRowsUpdatedSince: async () => ({ people: [], games: [], gamePlayers: [], rounds: [] }),
+    upsertRows: async () => {},
+    restoreRows: async (rows, restore) => {
+      restoreCalls.push({ rows, restore })
+      const error = new Error('Supabase games: stale mutation; newer remote row exists')
+      error.completedRows = { people: [], games: [rows.games[0]], gamePlayers: [], rounds: [] }
+      throw error
+    },
+    softDelete: async () => {},
+  }
+  const observed = { hook: null }
+  function Harness() {
+    observed.hook = useCloudSync({ activeGameId: null, games: [], roster: [] }, () => {}, {
+      configured: true, api,
+    })
+    return null
+  }
+
+  const root = createRoot(browser.createContainer())
+  try {
+    await act(async () => { root.render(React.createElement(Harness)); await Promise.resolve() })
+    await act(async () => {
+      observed.hook.enqueueStateMutation({
+        id: 'm_nested_local_state_restore_conflict',
+        entity: 'scorebook',
+        operation: 'restore',
+        payload: {
+          roster: [{ id: 'p_restore_nested', name: 'Nested', updatedAt: '2026-08-04T00:00:01.000Z' }],
+          games: [{
+            id: 'g_restore_nested',
+            gameId: 'farkle',
+            createdAt: '2026-08-04T00:00:01.000Z',
+            updatedAt: '2026-08-04T00:00:01.000Z',
+            players: [{ id: 'p_restore_nested', name: 'Nested', seatOrder: 0 }],
+            rounds: [{ id: 'r_restore_nested', roundIndex: 0, entries: { p_restore_nested: { score: 7 } } }],
+            settings: {},
+          }],
+          restore: {
+            games: [{ id: 'g_restore_nested', updated_at: '2026-08-03T00:00:01.000Z', deleted_at: '2026-08-03T00:00:01.000Z' }],
+            rounds: [{ id: 'r_restore_nested', game_id: 'g_restore_nested', updated_at: '2026-08-03T00:00:02.000Z', deleted_at: '2026-08-03T00:00:02.000Z' }],
+          },
+        },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    assert.equal(restoreCalls.length, 1)
+    const stored = loadSyncStore(globalThis.localStorage)
+    assert.equal(stored.outbox[0].status, 'conflict')
+    assert.deepEqual(stored.outbox[0].payload.rows.games, [])
+    assert.deepEqual(stored.outbox[0].payload.rows.rounds.map(({ id }) => id), ['r_restore_nested'])
+    assert.deepEqual(stored.outbox[0].payload.restore.games, [])
+    assert.deepEqual(stored.outbox[0].payload.restore.rounds.map(({ id }) => id), ['r_restore_nested'])
+  } finally {
+    await act(async () => { root.unmount() })
+    browser.restore()
+  }
+})
+
 test('continues replay after a local-state CAS conflict and retries nested rows', async () => {
   const browser = browserHarness()
   const useCloudSync = await loadHook()

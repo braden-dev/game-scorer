@@ -218,40 +218,18 @@ function filterRemoteRows(rows, completedRows) {
   return nextRows
 }
 
-function filterLocalStatePayload(payload, completedRows) {
-  const identities = completedIdentitySets(completedRows)
-  const nextPayload = { ...payload }
-  if (Array.isArray(nextPayload.roster)) {
-    nextPayload.roster = nextPayload.roster.filter((row) => !identities.people.has(remoteRowIdentity('people', row)))
-  }
-  if (Array.isArray(nextPayload.games)) {
-    nextPayload.games = nextPayload.games
-      .map((game) => ({
-        ...game,
-        players: Array.isArray(game?.players)
-          ? game.players.filter((player) => !identities.gamePlayers.has(remoteRowIdentity('gamePlayers', {
-            game_id: game.id,
-            person_id: player.id,
-          })))
-          : game?.players,
-        rounds: Array.isArray(game?.rounds)
-          ? game.rounds.filter((round) => !identities.rounds.has(remoteRowIdentity('rounds', {
-            game_id: game.id,
-            id: round.id,
-          })))
-          : game?.rounds,
-      }))
-      .filter((game) => !identities.games.has(remoteRowIdentity('games', game)))
-  }
-  return nextPayload
-}
-
 function filterMutationPayload(payload, entity, completedRows) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload
   if (payload.rows && typeof payload.rows === 'object' && !Array.isArray(payload.rows)) {
     return { ...payload, rows: filterRemoteRows(payload.rows, completedRows) }
   }
-  if (isLocalStatePayload(payload)) return filterLocalStatePayload(payload, completedRows)
+  if (isLocalStatePayload(payload)) {
+    const nextPayload = { rows: filterRemoteRows(toRemoteRows(payload), completedRows) }
+    if (payload.restore && typeof payload.restore === 'object') {
+      nextPayload.restore = filterRemoteRows(payload.restore, completedRows)
+    }
+    return nextPayload
+  }
   if (REMOTE_KEYS.some((key) => Array.isArray(payload[key]))) return filterRemoteRows(payload, completedRows)
 
   const key = remoteKey(entity)
